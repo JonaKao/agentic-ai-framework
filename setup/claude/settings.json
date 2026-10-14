@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 framework/aaf.py:*)",
+      "Bash(python3 -m unittest:*)",
+      "Bash(python3 -m pytest:*)"
+    ]
+  }
+}

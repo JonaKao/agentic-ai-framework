@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.tmp
+.venv/
+
+# Added by the Agentic AI Framework
+state/snapshots/
+state/drafts/
+state/drafts_history.json
+state/drafts-notes.md
+state/status.json
+state/checks.json
+state/check_history.jsonl
+state/events.jsonl
+state/git.json
+venv/
+projects/*/
+.claude/
