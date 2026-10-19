@@ -55,6 +55,7 @@ then `gh auth login`).
 | `.claude/agents/reviewer.md` | The independent reviewer subagent (installed from `setup/claude/`) |
 | `framework/aaf.py` | CLI the agent uses to record status, checks, decisions, reviews |
 | `projects/control-room/` | The dashboard, kept as a project so agents can improve it (`dashboard/server.py` starts it) |
+| `framework/hooks/activity.py` | Logs each agent step in plain words for the dashboard's live activity feed |
 | `template/` | Files every new project starts with |
 | `projects/<name>/` | Your projects: `CLAUDE.md`, `DONE.md`, `project.json`, `state/`, `plots/` |
 

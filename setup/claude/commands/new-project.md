@@ -6,7 +6,8 @@ argument-hint: <name> [description]
 Input: $ARGUMENTS
 
 1. Run `python3 framework/aaf.py new <name> --description "<description, if given>"`.
-2. Ask the human, one question at a time, until you can fill in:
+2. Ask the human, one question at a time, until you can fill in `README.md` (what it
+   does) and:
    - `projects/<name>/CLAUDE.md`: purpose, how to run, conventions, what not to touch
    - `projects/<name>/DONE.md`: the project-specific criteria (metrics, thresholds,
      what plots must show)

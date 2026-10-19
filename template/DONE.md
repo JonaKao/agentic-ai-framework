@@ -9,6 +9,7 @@ A task is finished only when every item below holds. The reviewer checks each on
 - [ ] The task's own success is covered by a check, not only by manual inspection
 - [ ] The reviewer subagent returned PASS
 - [ ] `state/progress.md` says what changed and what is next
+- [ ] `README.md` describes the project as it is now, including this change
 - [ ] Plots produced by the task were opened and inspected; irregularities are noted
 
 ## Project-specific

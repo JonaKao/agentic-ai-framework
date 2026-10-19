@@ -13,7 +13,8 @@ own context files. Read this file first, then the project's files.
 | `projects/<name>/project.json` | The project's checks (commands that must exit 0), `max_iterations` per task and `fix_iterations` per follow-up fix |
 | `projects/<name>/state/` | Progress note, decisions log, status, check results, reviews. The dashboard reads this |
 | `projects/<name>/plots/` | Plots produced by the project. Shown on the dashboard |
-| `framework/aaf.py` | The one CLI for recording state: `new`, `check`, `status`, `decide`, `review`, `snapshot`, `restore`, `draft`, `git` |
+| `framework/aaf.py` | The one CLI for recording state: `new`, `check`, `status`, `decide`, `review`, `snapshot`, `restore`, `draft`, `git`, `stats` |
+| `framework/hooks/activity.py` | Claude Code hook that logs each step the agent takes to `projects/<name>/state/activity.jsonl` for the live activity feed. Runs in the background; never edit its output by hand |
 | `projects/control-room/` | The dashboard itself, as a project agents can improve. Start it with `python3 dashboard/server.py` (a shim), then open http://localhost:8765 |
 | `template/` | Files copied into every new project |
 
@@ -48,7 +49,11 @@ own context files. Read this file first, then the project's files.
    `git push` directly, and never force-push or rewrite history. `aaf.py git commit`
    refuses while checks fail, writes the message from the recorded task, decisions,
    checks and review, and pushes. Live dashboard files and drafts stay local.
-9. **Stop honestly.** If the same failure repeats three times, or the iteration limit
+9. **Keep the README alive.** Every project has a `README.md` that describes it as it
+   is now. Update it at the end of any task that changes what the project does, how to
+   run it or how it is built. The sections between `<!-- aaf:history:... -->` and
+   `<!-- aaf:checks:... -->` markers are generated on every commit; never edit them by hand.
+10. **Stop honestly.** If the same failure repeats three times, or the iteration limit
    in `project.json` is reached, set phase `stuck` and report what you tried, the
    evidence, and what you need from the human.
 

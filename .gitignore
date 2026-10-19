@@ -17,3 +17,11 @@ state/git.json
 venv/
 projects/*/
 .claude/
+
+# Hook scratch data
+.aaf/
+
+# Added by the Agentic AI Framework
+state/activity.jsonl
+state/plan.json
+state/estimates.jsonl

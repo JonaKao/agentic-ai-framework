@@ -15,8 +15,15 @@ Usage (from the workspace root):
   python3 framework/aaf.py git init <name> [--repo NAME] [--public] [--no-remote]
   python3 framework/aaf.py git init-framework [--repo NAME] [--public] [--no-remote]
   python3 framework/aaf.py git commit <name> [--title TEXT] [--allow-failing]
+  python3 framework/aaf.py git commit-framework [--title TEXT]
   python3 framework/aaf.py git push|pull <name>
   python3 framework/aaf.py git info <name> [--fetch]
+  python3 framework/aaf.py git files <name>
+  python3 framework/aaf.py stats <name>
+  python3 framework/aaf.py readme <name>
+  python3 framework/aaf.py plan <name> --step TEXT [--step TEXT ...] | --add TEXT
+  python3 framework/aaf.py step <name> N
+  python3 framework/aaf.py estimate <name>
   python3 framework/aaf.py list
 
 Standard library only; runs on the Python 3.9 that ships with macOS.
@@ -83,8 +90,12 @@ def append_jsonl(path, record):
         f.write(json.dumps(record) + "\n")
 
 
-def event(pdir, kind, text):
-    append_jsonl(os.path.join(pdir, "state", "events.jsonl"), {"ts": now(), "kind": kind, "text": text})
+def event(pdir, kind, text, **fields):
+    """Append to the project's event log. Extra fields keep the record machine-readable
+    for the dashboard's timeline and track record; the text is for people."""
+    rec = {"ts": now(), "kind": kind, "text": text}
+    rec.update({k: v for k, v in fields.items() if v is not None})
+    append_jsonl(os.path.join(pdir, "state", "events.jsonl"), rec)
 
 
 # ---------------------------------------------------------------- new
@@ -180,7 +191,9 @@ def cmd_check(args):
     n_ok = sum(r["passed"] for r in results)
     append_jsonl(os.path.join(pdir, "state", "check_history.jsonl"),
                  {"ran_at": record["ran_at"], "passed": all_passed, "n_pass": n_ok, "n_total": len(results)})
-    event(pdir, "check", "Checks %s: %d of %d passed" % ("passed" if all_passed else "failed", n_ok, len(results)))
+    event(pdir, "check", "Checks %s: %d of %d passed" % ("passed" if all_passed else "failed", n_ok, len(results)),
+          passed=all_passed, n_pass=n_ok, n_total=len(results),
+          failed=[r["name"] for r in results if not r["passed"]] or None)
     print("\n%d of %d checks passed." % (n_ok, len(results)))
     sys.exit(0 if all_passed else 1)
 
@@ -207,7 +220,8 @@ def cmd_status(args):
         text += ": " + args.note
     elif args.task:
         text += ": " + args.task
-    event(pdir, "status", text)
+    event(pdir, "status", text, phase=args.phase, iteration=args.iteration, task=args.task)
+    _log_estimate(pdir)
     print(text)
 
 
@@ -219,7 +233,7 @@ def cmd_decide(args):
     day = dt.date.today().isoformat()
     with open(path, "a") as f:
         f.write("\n## %s: %s\n\n%s\n" % (day, args.title.strip(), args.rationale.strip()))
-    event(pdir, "decision", args.title.strip())
+    event(pdir, "decision", args.title.strip(), title=args.title.strip())
     print("Recorded decision: " + args.title)
 
 
@@ -238,7 +252,7 @@ def cmd_review(args):
     write_json(os.path.join(pdir, "state", "review.json"), rec)
     append_jsonl(os.path.join(pdir, "state", "review_history.jsonl"),
                  {"at": rec["at"], "verdict": args.verdict, "summary": args.summary})
-    event(pdir, "review", "Review %s: %s" % (args.verdict.upper(), args.summary))
+    event(pdir, "review", "Review %s: %s" % (args.verdict.upper(), args.summary), verdict=args.verdict)
     print("Recorded review: " + args.verdict.upper())
 
 
@@ -248,17 +262,40 @@ def cmd_review(args):
 # A snapshot is a copy of the project's working files (everything except state/).
 # Drafts are snapshots of an unfinished fix attempt, kept until the human decides.
 
+NESTED_SKIP = {"__pycache__", ".git", ".venv", "venv", "node_modules", ".DS_Store"}
+
+
 def _copy_tree(src, dst):
-    """Copy project files from src to dst, skipping state/ and caches."""
+    """Copy project files from src to dst. Skips the project's own top-level state/ and
+    caches. Nested folders named state/ (for example test fixtures) are project files
+    and are copied like everything else."""
     os.makedirs(dst, exist_ok=True)
     for entry in os.listdir(src):
         if entry in SKIP:
             continue
         s, d = os.path.join(src, entry), os.path.join(dst, entry)
         if os.path.isdir(s):
-            shutil.copytree(s, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*SKIP))
+            shutil.copytree(s, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*NESTED_SKIP))
         else:
             shutil.copy2(s, d)
+
+
+def _file_set(root):
+    """Relative paths of the files _copy_tree would copy from root."""
+    out = set()
+    for entry in os.listdir(root):
+        if entry in SKIP:
+            continue
+        path = os.path.join(root, entry)
+        if os.path.isdir(path):
+            for dirpath, dirs, files in os.walk(path):
+                dirs[:] = [d for d in dirs if d not in NESTED_SKIP]
+                for fn in files:
+                    if fn not in NESTED_SKIP:
+                        out.add(os.path.relpath(os.path.join(dirpath, fn), root))
+        else:
+            out.add(entry)
+    return out
 
 
 def _clear_working_files(pdir):
@@ -289,10 +326,25 @@ def _snapshot(pdir, label):
 
 
 def _restore_from(pdir, src):
+    """Replace the working files with those in src. Keeps a backup of the current files
+    in state/snapshots/before-last-restore and verifies the result, so a rollback can
+    itself be undone."""
     if not os.path.isdir(src):
         die("nothing to restore at %s" % os.path.relpath(src, pdir))
+    backup = os.path.join(pdir, "state", "snapshots", "before-last-restore")
+    if os.path.abspath(src) != os.path.abspath(backup):
+        if os.path.exists(backup):
+            shutil.rmtree(backup)
+        _copy_tree(pdir, backup)
     _clear_working_files(pdir)
     _copy_tree(src, pdir)
+    expected, actual = _file_set(src), _file_set(pdir)
+    if expected != actual:
+        missing = sorted(expected - actual)[:10]
+        extra = sorted(actual - expected)[:10]
+        die("restore did not reproduce the snapshot exactly (missing: %s; extra: %s). "
+            "The files from before the restore are in state/snapshots/before-last-restore."
+            % (missing, extra))
 
 
 def cmd_snapshot(args):
@@ -305,7 +357,7 @@ def cmd_snapshot(args):
 def cmd_restore(args):
     pdir = project_dir(args.name)
     _restore_from(pdir, os.path.join(pdir, "state", "snapshots", _label(args.label)))
-    event(pdir, "status", "Rolled back to snapshot %s" % args.label)
+    event(pdir, "status", "Rolled back to snapshot %s" % args.label, action="restore", label=args.label)
     print("Restored project files from snapshot %s" % args.label)
 
 
@@ -337,7 +389,7 @@ def cmd_draft(args):
                 "iterations": (args.iterations or 0) + prev.get("iterations", 0),
                 "rounds": prev.get("rounds", 0) + 1, "created": now(), "status": "open"}
         write_json(os.path.join(ddir, "meta.json"), meta)
-        event(pdir, "draft", "Draft saved: %s (%s)" % (args.issue, args.summary))
+        event(pdir, "draft", "Draft saved: %s (%s)" % (args.issue, args.summary), action="save", draft=args.id)
         print("Draft %s saved after %d iteration(s) in total" % (args.id, meta["iterations"]))
 
     elif args.action == "apply":
@@ -351,7 +403,7 @@ def cmd_draft(args):
         hist[args.id] = {"iterations": meta["iterations"], "rounds": meta["rounds"], "issue": meta["issue"]}
         write_json(hist_path, hist)
         shutil.rmtree(ddir)
-        event(pdir, "draft", "Continuing draft: %s" % meta["issue"])
+        event(pdir, "draft", "Continuing draft: %s" % meta["issue"], action="apply", draft=args.id)
         print("Draft %s applied. Previous state saved as snapshot before-draft-%s.\n" % (args.id, args.id))
         print("Issue: %s\nLast attempt: %s\n%s" % (meta["issue"], meta["summary"], meta.get("notes", "")))
 
@@ -367,7 +419,7 @@ def cmd_draft(args):
         append_jsonl(os.path.join(pdir, "state", "discarded_drafts.jsonl"),
                      {"at": now(), "id": args.id, "issue": meta["issue"], "summary": meta["summary"],
                       "iterations": meta["iterations"]})
-        event(pdir, "draft", "Draft discarded, kept as known issue: %s" % meta["issue"])
+        event(pdir, "draft", "Draft discarded, kept as known issue: %s" % meta["issue"], action="discard", draft=args.id)
         print("Draft %s discarded. Record it as a known issue in state/progress.md." % args.id)
 
     elif args.action == "list":
@@ -399,6 +451,9 @@ state/checks.json
 state/check_history.jsonl
 state/events.jsonl
 state/git.json
+state/activity.jsonl
+state/plan.json
+state/estimates.jsonl
 *.tmp
 .venv/
 venv/
@@ -412,6 +467,8 @@ FRAMEWORK_GITIGNORE_EXTRA = """
 projects/*/
 # Installed copy of setup/claude/ (plus Claude Code's local settings)
 .claude/
+# Hook scratch data
+.aaf/
 """
 
 TRAILER_RE = re.compile(r"^([A-Za-z][A-Za-z-]*): (.+)$")
@@ -496,6 +553,36 @@ def git_init_framework(args):
     print("Framework repository ready" + (": " + web_url(url) if url else " (no remote)"))
 
 
+def git_commit_framework(args):
+    """Commit and push changes to the framework itself (commands, aaf.py, hooks, templates).
+    Projects are separate repositories and are not affected."""
+    if not is_repo(ROOT):
+        die("the framework is not a Git repository yet (run: aaf.py git init-framework)")
+    ensure_gitignore(ROOT, FRAMEWORK_GITIGNORE_EXTRA)
+    run(["git", "add", "-A"], ROOT)
+    changed = run(["git", "diff", "--cached", "--name-status"], ROOT).stdout.strip().splitlines()
+    if not changed:
+        print("Nothing to commit in the framework.")
+        return
+    title = (args.title or "Update the framework").strip().splitlines()[0][:72]
+    words = {"A": "added", "M": "changed", "D": "removed", "R": "renamed"}
+    lines = []
+    for l in changed:
+        parts = l.split("\t")
+        lines.append("- %s %s" % (words.get(parts[0][:1], parts[0]), parts[-1]))
+    msg = title + "\n\nFiles:\n" + "\n".join(lines) + "\n"
+    proc = subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=ROOT, input=msg, text=True, capture_output=True)
+    if proc.returncode != 0:
+        die("git commit failed:\n" + (proc.stderr or proc.stdout))
+    short = run(["git", "rev-parse", "--short", "HEAD"], ROOT).stdout.strip()
+    print("Committed %s: %s (%d files)" % (short, title, len(changed)))
+    if remote_url(ROOT):
+        proc = run(["git", "push", "-q", "-u", "origin", "HEAD"], ROOT, check=False)
+        if proc.returncode != 0:
+            die("push failed:\n" + proc.stderr.strip())
+        print("Pushed to " + (web_url(remote_url(ROOT)) or remote_url(ROOT)))
+
+
 def _decisions(pdir):
     try:
         md = open(os.path.join(pdir, "state", "decisions.md")).read()
@@ -556,6 +643,7 @@ def git_commit(args):
     if not args.allow_failing and not ck.get("passed"):
         die("refusing to commit: the latest check run did not pass. Run `aaf.py check %s` first." % args.name)
     ensure_gitignore(pdir)
+    update_readme(pdir)
     run(["git", "add", "-A"], pdir)
     if not run(["git", "status", "--porcelain"], pdir).stdout.strip():
         print("Nothing to commit.")
@@ -570,7 +658,7 @@ def git_commit(args):
     if proc.returncode != 0:
         die("git commit failed:\n" + (proc.stderr or proc.stdout))
     short = run(["git", "rev-parse", "--short", "HEAD"], pdir).stdout.strip()
-    event(pdir, "git", "Committed %s: %s" % (short, msg.splitlines()[0]))
+    event(pdir, "git", "Committed %s: %s" % (short, msg.splitlines()[0]), action="commit", commit=short)
     print("Committed %s: %s" % (short, msg.splitlines()[0]))
     if gj.get("auto_push", True) and remote_url(pdir):
         git_push(args)
@@ -624,6 +712,12 @@ def git_info_dict(pdir, fetch=False, limit=40):
     if ab.returncode == 0:
         behind, ahead = (int(x) for x in ab.stdout.split())
     changed = [l[3:] for l in run(["git", "status", "--porcelain"], pdir).stdout.splitlines()]
+    # Which commits GitHub already has (as of the last fetch or push): everything reachable
+    # from the upstream branch. Correct for merges and long histories alike.
+    on_remote = None
+    if ab.returncode == 0:
+        up = run(["git", "rev-list", "-n", "2000", "@{u}"], pdir, check=False)
+        on_remote = set(up.stdout.split()) if up.returncode == 0 else None
     sep, end = "\x1f", "\x1e"
     log = run(["git", "log", "-n", str(limit), "--pretty=format:%H" + sep + "%h" + sep + "%aI" + sep + "%an"
                + sep + "%s" + sep + "%b" + end], pdir, check=False)
@@ -642,7 +736,8 @@ def git_info_dict(pdir, fetch=False, limit=40):
                     trailers[m.group(1)] = m.group(2)
             body = "\n\n".join(paras[:-1]).strip()
         commits.append({"hash": parts[0], "short": parts[1], "date": parts[2], "author": parts[3],
-                        "subject": parts[4], "body": body, "trailers": trailers})
+                        "subject": parts[4], "body": body, "trailers": trailers,
+                        "pushed": (parts[0] in on_remote) if on_remote is not None else None})
     return {"repo": True, "branch": branch, "remote": url, "web": web_url(url),
             "ahead": ahead, "behind": behind, "changed": changed[:50], "n_changed": len(changed),
             "commits": commits}
@@ -650,10 +745,444 @@ def git_info_dict(pdir, fetch=False, limit=40):
 
 def cmd_git(args):
     fn = {"init": git_init, "init-framework": git_init_framework, "commit": git_commit,
-          "push": git_push, "pull": git_pull, "info": git_info}[args.action]
-    if args.action != "init-framework" and not args.name:
+          "commit-framework": git_commit_framework,
+          "push": git_push, "pull": git_pull, "info": git_info,
+          "files": lambda a: print(json.dumps(git_files_dict(project_dir(a.name)), indent=2))}[args.action]
+    if args.action not in ("init-framework", "commit-framework") and not args.name:
         die("git %s needs a project name" % args.action)
     fn(args)
+
+
+# ---------------------------------------------------------------- stats
+#
+# Derived views for the dashboard: per-task timelines and the agent's track record.
+# Everything is computed from the event log, so older logs (text only) still work.
+
+STATUS_RE = re.compile(r"^(Idle|Planning|Implementing|Checking|Reviewing|Fixing|Waiting|Done|Stuck)"
+                       r"(?: \(iteration (\d+)\))?")
+END_PHASES = {"done", "stuck", "waiting"}
+
+
+def _parse_ts(ts):
+    try:
+        return dt.datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+
+
+def _status_fields(e):
+    phase, it = e.get("phase"), e.get("iteration")
+    if phase is None:
+        m = STATUS_RE.match(e.get("text", ""))
+        if not m:
+            return None, None
+        phase, it = m.group(1).lower(), (int(m.group(2)) if m.group(2) else None)
+    return phase, it
+
+
+def _read_events(pdir):
+    out = []
+    try:
+        with open(os.path.join(pdir, "state", "events.jsonl")) as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def task_stats(pdir):
+    """One record per task: its phases over time, attempts, check runs, reviews, drafts."""
+    tasks, cur = [], None
+
+    def close_phase(at):
+        if cur and cur["phases"] and cur["phases"][-1]["end"] is None:
+            cur["phases"][-1]["end"] = at
+
+    for e in _read_events(pdir):
+        kind, ts = e.get("kind"), e.get("ts")
+        if kind == "status" and e.get("action") != "restore":
+            phase, it = _status_fields(e)
+            if phase is None:
+                continue
+            title = e.get("task")
+            if not title and "phase" not in e and phase == "planning" and e.get("text", "").startswith("Planning: "):
+                title = e["text"].split(": ", 1)[1]
+            if title:
+                close_phase(ts)
+                if cur and cur["end"] is None:
+                    cur["end"] = ts
+                cur = {"task": title, "start": ts, "end": None, "outcome": "running", "phases": [],
+                       "attempts": 0, "check_runs": 0, "check_failures": 0, "reviews": [],
+                       "drafts": 0, "decisions": 0, "commits": [], "times_stuck": 0}
+                tasks.append(cur)
+            if cur is None:
+                continue
+            close_phase(ts)
+            if phase in END_PHASES:
+                cur["outcome"], cur["end"] = phase, ts
+                if phase == "stuck":
+                    cur["times_stuck"] += 1
+                continue
+            if phase == "idle":
+                continue
+            if cur["outcome"] != "running":      # work resumed after an end (e.g. /draft continue)
+                cur["outcome"], cur["end"] = "running", None
+            cur["phases"].append({"phase": phase, "iteration": it, "start": ts, "end": None})
+            if phase in ("implementing", "fixing") and it:
+                cur["attempts"] = max(cur["attempts"], it)
+        elif cur is not None:
+            if kind == "check":
+                cur["check_runs"] += 1
+                passed = e.get("passed")
+                if passed is None:
+                    passed = e.get("text", "").startswith("Checks passed")
+                if not passed:
+                    cur["check_failures"] += 1
+            elif kind == "review":
+                cur["reviews"].append(e.get("verdict") or ("pass" if "PASS" in e.get("text", "") else "fail"))
+            elif kind == "draft" and (e.get("action") == "save" or e.get("text", "").startswith("Draft saved")):
+                cur["drafts"] += 1
+            elif kind == "decision":
+                cur["decisions"] += 1
+            elif kind == "git" and (e.get("action") == "commit" or e.get("text", "").startswith("Committed")):
+                cur["commits"].append(e.get("commit") or e["text"].split()[1].rstrip(":"))
+
+    for t in tasks:
+        a, b = _parse_ts(t["start"]), _parse_ts(t["end"])
+        t["duration_s"] = int((b - a).total_seconds()) if a and b else None
+        for ph in t["phases"]:
+            a, b = _parse_ts(ph["start"]), _parse_ts(ph["end"])
+            ph["duration_s"] = int((b - a).total_seconds()) if a and b else None
+        impl = [p["iteration"] for p in t["phases"] if p["phase"] == "implementing" and p["iteration"]]
+        t["first_try"] = bool(impl) and max(impl) == 1 and bool(t["reviews"]) and t["reviews"][0] == "pass"
+
+    finished = [t for t in tasks if t["outcome"] in END_PHASES]
+    reviews = [v for t in tasks for v in t["reviews"]]
+    attempts = sorted(t["attempts"] for t in finished)
+    summary = {
+        "tasks": len(tasks),
+        "finished": len(finished),
+        "done": sum(1 for t in finished if t["outcome"] == "done"),
+        "waiting": sum(1 for t in finished if t["outcome"] == "waiting"),
+        "stuck": sum(1 for t in finished if t["outcome"] == "stuck"),
+        "first_try": sum(1 for t in finished if t["first_try"]),
+        "reviews": len(reviews),
+        "review_fails": sum(1 for v in reviews if v == "fail"),
+        "drafts": sum(t["drafts"] for t in tasks),
+        "times_stuck": sum(t["times_stuck"] for t in tasks),
+        "median_attempts": attempts[len(attempts) // 2] if attempts else None,
+    }
+    return {"summary": summary, "tasks": tasks}
+
+
+def cmd_stats(args):
+    out = task_stats(project_dir(args.name))
+    out["estimate_accuracy"] = _calibration()
+    print(json.dumps(out, indent=2))
+
+
+def git_files_dict(pdir, limit_commits=500):
+    """Per-file history for the change map: size, how often commits changed it, and when."""
+    if not is_repo(pdir):
+        return {"repo": False, "files": []}
+    info = {}
+    for f in run(["git", "ls-files"], pdir).stdout.splitlines():
+        try:
+            size = os.path.getsize(os.path.join(pdir, f))
+        except OSError:
+            size = 0
+        info[f] = {"path": f, "bytes": size, "commits": 0, "lines_changed": 0,
+                   "last_changed": None, "last_subject": None}
+    log = run(["git", "log", "-n", str(limit_commits), "--numstat", "--format=\x1e%h\x1f%aI\x1f%s"],
+              pdir, check=False).stdout
+    for rec in log.split("\x1e")[1:]:
+        head, _, rest = rec.partition("\n")
+        parts = head.split("\x1f")
+        if len(parts) < 3:
+            continue
+        date, subject = parts[1], parts[2]
+        for line in rest.splitlines():
+            cols = line.split("\t")
+            if len(cols) != 3 or cols[2] not in info:
+                continue
+            d = info[cols[2]]
+            d["commits"] += 1
+            d["lines_changed"] += sum(int(c) for c in cols[:2] if c.isdigit())
+            if d["last_changed"] is None:
+                d["last_changed"], d["last_subject"] = date, subject
+    return {"repo": True, "files": sorted(info.values(), key=lambda d: d["path"])}
+
+
+# ---------------------------------------------------------------- plan and estimate
+#
+# During planning the agent records its plan as steps and ticks them off. The estimate
+# combines that with every finished task recorded in the workspace, recomputed from the
+# event logs on each call, so each new task improves it. Predictions are logged at
+# milestones and later compared with what actually happened; that comparison widens or
+# narrows future ranges (calibration).
+
+TARGET_COVERAGE = (0.7, 0.9)    # share of past predictions whose range held the actual outcome
+MIN_HISTORY = 3
+
+
+def _plan_path(pdir):
+    return os.path.join(pdir, "state", "plan.json")
+
+
+def cmd_plan(args):
+    pdir = project_dir(args.name)
+    st = read_json(os.path.join(pdir, "state", "status.json"), {})
+    path = _plan_path(pdir)
+    plan = read_json(path, {})
+    if args.add:
+        if not plan.get("steps"):
+            die("no plan yet; record one with --step")
+        plan["steps"].extend({"text": t, "done_at": None, "added_later": True} for t in args.add)
+        text = "Plan grew to %d steps" % len(plan["steps"])
+    else:
+        if not args.step:
+            die("give the plan as --step TEXT (repeat for each step)")
+        plan = {"task": st.get("task", ""), "created": now(),
+                "steps": [{"text": t, "done_at": None} for t in args.step]}
+        text = "Plan: %d steps" % len(plan["steps"])
+    write_json(path, plan)
+    event(pdir, "plan", text, n_steps=len(plan["steps"]))
+    _log_estimate(pdir)
+    print(text)
+
+
+def cmd_step(args):
+    pdir = project_dir(args.name)
+    path = _plan_path(pdir)
+    plan = read_json(path, {})
+    steps = plan.get("steps", [])
+    if not 1 <= args.number <= len(steps):
+        die("step %d does not exist (the plan has %d steps)" % (args.number, len(steps)))
+    steps[args.number - 1]["done_at"] = now()
+    write_json(path, plan)
+    done = sum(1 for s in steps if s["done_at"])
+    event(pdir, "step", "Step %d of %d done: %s" % (args.number, len(steps), steps[args.number - 1]["text"]),
+          step=args.number, n_steps=len(steps), n_done=done)
+    _log_estimate(pdir)
+    print("Step %d of %d done" % (args.number, len(steps)))
+
+
+def _quantile(values, q):
+    v = sorted(values)
+    if not v:
+        return None
+    pos = (len(v) - 1) * q
+    lo, hi = int(pos), min(int(pos) + 1, len(v) - 1)
+    return v[lo] + (v[hi] - v[lo]) * (pos - lo)
+
+
+def _history():
+    """Finished tasks from every project, with total time and 'tail' time (review,
+    fixing and final checks after the last implementing phase)."""
+    out = []
+    for name in sorted(os.listdir(PROJECTS)) if os.path.isdir(PROJECTS) else []:
+        pdir = os.path.join(PROJECTS, name)
+        if not os.path.isdir(os.path.join(pdir, "state")):
+            continue
+        for t in task_stats(pdir)["tasks"]:
+            if t["outcome"] not in ("done", "waiting") or not t["duration_s"]:
+                continue
+            last_impl = max((i for i, p in enumerate(t["phases"]) if p["phase"] == "implementing"), default=-1)
+            tail = sum(p["duration_s"] or 0 for p in t["phases"][last_impl + 1:]) if last_impl >= 0 else 0
+            plan_phase = sum(p["duration_s"] or 0 for p in t["phases"] if p["phase"] == "planning")
+            out.append({"project": name, "total": t["duration_s"], "tail": tail, "planning": plan_phase})
+    return out
+
+
+def _calibration(pdir_filter=None):
+    """How often past logged ranges contained the real remaining time, and a scale
+    factor for the width of new ranges."""
+    hits = n = 0
+    for name in os.listdir(PROJECTS) if os.path.isdir(PROJECTS) else []:
+        pdir = os.path.join(PROJECTS, name)
+        ends = {}
+        for t in task_stats(pdir)["tasks"] if os.path.isdir(os.path.join(pdir, "state")) else []:
+            if t["outcome"] in ("done", "waiting") and t["end"]:
+                ends[t["start"]] = t["end"]
+        try:
+            with open(os.path.join(pdir, "state", "estimates.jsonl")) as f:
+                rows = [json.loads(l) for l in f if l.strip()]
+        except (OSError, ValueError):
+            continue
+        for r in rows:
+            end = ends.get(r.get("task_start"))
+            a, b = _parse_ts(r.get("ts")), _parse_ts(end)
+            if not (a and b) or r.get("remaining_low_s") is None:
+                continue
+            actual = (b - a).total_seconds()
+            n += 1
+            hits += r["remaining_low_s"] <= actual <= r["remaining_high_s"]
+    coverage = hits / n if n else None
+    scale = 1.0
+    if n >= 10:
+        if coverage < TARGET_COVERAGE[0]:
+            scale = min(2.5, 1.0 + (TARGET_COVERAGE[0] - coverage) * 3)
+        elif coverage > TARGET_COVERAGE[1]:
+            scale = max(0.6, 1.0 - (coverage - TARGET_COVERAGE[1]) * 2)
+    return {"predictions_checked": n, "coverage": coverage, "width_scale": round(scale, 2)}
+
+
+def estimate(pdir):
+    st = read_json(os.path.join(pdir, "state", "status.json"), {})
+    phase = st.get("phase", "idle")
+    if phase not in ("planning", "implementing", "checking", "reviewing", "fixing"):
+        return {"active": False, "phase": phase}
+    start = _parse_ts(st.get("task_started"))
+    now_t = dt.datetime.now().astimezone()
+    elapsed = (now_t - start).total_seconds() if start else 0
+    hist = _history()
+    own = [h for h in hist if h["project"] == os.path.basename(pdir)]
+    pool = own if len(own) >= 5 else hist
+    plan = read_json(_plan_path(pdir), {})
+    steps = plan.get("steps") if plan.get("task") == st.get("task") else None
+    cal = _calibration()
+    result = {"active": True, "phase": phase, "elapsed_s": int(elapsed), "history_tasks": len(pool),
+              "history_scope": "this project" if pool is own else "all projects", "calibration": cal}
+
+    if len(pool) < MIN_HISTORY:
+        result.update({"basis": "too little history", "remaining_low_s": None, "remaining_high_s": None,
+                       "progress_low": None, "progress_high": None})
+    else:
+        tails = [h["tail"] for h in pool]
+        tail_lo, tail_hi = _quantile(tails, 0.2), _quantile(tails, 0.8)
+        in_tail = phase in ("reviewing", "fixing") or (steps and all(s["done_at"] for s in steps))
+        if steps and any(s["done_at"] for s in steps) and not in_tail:
+            # Plan-based: time per finished step so far, extrapolated to the rest, plus the usual tail.
+            done = [s for s in steps if s["done_at"]]
+            plan_start = _parse_ts(plan.get("created")) or start
+            per_step = max(30.0, (now_t - plan_start).total_seconds() / len(done))
+            left = len(steps) - len(done)
+            lo, hi = left * per_step * 0.7 + tail_lo, left * per_step * 1.6 + tail_hi
+            basis = "plan steps (%d of %d done) and past review time" % (len(done), len(steps))
+        elif in_tail:
+            # Review and follow-up fixes: what is usually left of the tail, given time already spent in it.
+            tail_spent = 0.0
+            for p in reversed(next((t for t in task_stats(pdir)["tasks"][-1:]), {"phases": []})["phases"]):
+                if p["phase"] == "implementing":
+                    break
+                b = _parse_ts(p["end"]) or now_t
+                a = _parse_ts(p["start"])
+                tail_spent += (b - a).total_seconds() if a else 0
+            longer = [t - tail_spent for t in tails if t > tail_spent]
+            lo = _quantile(longer, 0.2) if longer else 60
+            hi = _quantile(longer, 0.8) if longer else max(300, tail_spent * 0.5)
+            basis = "past review and fixing time"
+        else:
+            # Duration-based: among past tasks that ran longer than this one so far, how much was left.
+            longer = [h["total"] - elapsed for h in pool if h["total"] > elapsed]
+            if len(longer) >= 2:
+                lo, hi = _quantile(longer, 0.2), _quantile(longer, 0.8)
+                basis = "how long past tasks took"
+            else:
+                lo, hi = elapsed * 0.1, elapsed * 0.6
+                basis = "already longer than almost every past task"
+        mid, half = (lo + hi) / 2, (hi - lo) / 2 * cal["width_scale"]
+        lo, hi = max(0.0, mid - half), mid + half
+        result.update({"basis": basis, "remaining_low_s": int(lo), "remaining_high_s": int(hi),
+                       "progress_low": round(elapsed / (elapsed + hi), 2) if elapsed + hi else None,
+                       "progress_high": round(elapsed / (elapsed + lo), 2) if elapsed + lo else None})
+    if steps:
+        result["plan"] = {"steps": len(steps), "done": sum(1 for s in steps if s["done_at"]),
+                          "current": next((s["text"] for s in steps if not s["done_at"]), None)}
+    return result
+
+
+def _log_estimate(pdir):
+    """Record the estimate at a milestone so it can be checked against reality later."""
+    try:
+        e = estimate(pdir)
+        if not e.get("active") or e.get("remaining_low_s") is None:
+            return
+        st = read_json(os.path.join(pdir, "state", "status.json"), {})
+        append_jsonl(os.path.join(pdir, "state", "estimates.jsonl"), {
+            "ts": now(), "task_start": st.get("task_started"), "phase": e["phase"],
+            "elapsed_s": e["elapsed_s"], "remaining_low_s": e["remaining_low_s"],
+            "remaining_high_s": e["remaining_high_s"], "basis": e["basis"]})
+    except Exception:
+        pass
+
+
+def cmd_estimate(args):
+    print(json.dumps(estimate(project_dir(args.name)), indent=2))
+
+
+# ---------------------------------------------------------------- readme
+#
+# A project's README.md is written by the agent, but two sections are generated here
+# so they can never go stale. They live between markers; anything outside the markers
+# is left untouched:
+#   <!-- aaf:history:start --> ... <!-- aaf:history:end -->   finished tasks, newest first
+#   <!-- aaf:checks:start --> ... <!-- aaf:checks:end -->     the project's checks
+
+README_SECTIONS = ("history", "checks")
+
+
+def _readme_history(pdir, limit=25):
+    tasks = [t for t in task_stats(pdir)["tasks"] if t["outcome"] in ("done", "waiting")]
+    if not tasks:
+        return "_No finished tasks yet._"
+    lines = []
+    for t in reversed(tasks[-limit:]):
+        day = (t["end"] or t["start"] or "")[:10]
+        notes = []
+        if t["first_try"]:
+            notes.append("first try")
+        elif t["attempts"] > 1:
+            notes.append("%d attempts" % t["attempts"])
+        if t["reviews"]:
+            notes.append("review " + ("passed" if t["reviews"][-1] == "pass" else "failed"))
+        if t["outcome"] == "waiting":
+            notes.append("a follow-up fix is waiting for a decision")
+        lines.append("- %s: %s%s" % (day, t["task"], " (%s)" % ", ".join(notes) if notes else ""))
+    return "\n".join(lines)
+
+
+def _readme_checks(pdir):
+    cfg = read_json(os.path.join(pdir, "project.json"), {})
+    checks = cfg.get("checks", [])
+    if not checks:
+        return "_No checks defined yet._"
+    out = ["Every change must pass these before it is committed:", ""]
+    for c in checks:
+        out.append("- **%s**: `%s`" % (c.get("name") or c["cmd"], c["cmd"]))
+    return "\n".join(out)
+
+
+def update_readme(pdir):
+    """Regenerate the marked sections of README.md. Returns True if the file changed."""
+    path = os.path.join(pdir, "README.md")
+    if not os.path.exists(path):
+        return False
+    text = open(path).read()
+    new = text
+    for name, fn in (("history", _readme_history), ("checks", _readme_checks)):
+        start, end = "<!-- aaf:%s:start -->" % name, "<!-- aaf:%s:end -->" % name
+        i, j = new.find(start), new.find(end)
+        if i == -1 or j == -1 or j < i:
+            continue
+        new = new[:i + len(start)] + "\n" + fn(pdir) + "\n" + new[j:]
+    if new != text:
+        with open(path, "w") as f:
+            f.write(new)
+        return True
+    return False
+
+
+def cmd_readme(args):
+    pdir = project_dir(args.name)
+    if not os.path.exists(os.path.join(pdir, "README.md")):
+        die("projects/%s has no README.md yet" % args.name)
+    print("README.md updated" if update_readme(pdir) else "README.md already up to date")
+
 
 # ---------------------------------------------------------------- list
 
@@ -695,11 +1224,18 @@ def main():
     s.add_argument("--issue"); s.add_argument("--summary"); s.add_argument("--iterations", type=int)
     s.add_argument("--notes"); s.set_defaults(fn=cmd_draft)
 
-    s = sub.add_parser("git"); s.add_argument("action", choices=["init", "init-framework", "commit", "push", "pull", "info"])
+    s = sub.add_parser("git"); s.add_argument("action", choices=["init", "init-framework", "commit", "commit-framework", "push", "pull", "info", "files"])
     s.add_argument("name", nargs="?"); s.add_argument("--repo"); s.add_argument("--public", action="store_true")
     s.add_argument("--no-remote", action="store_true"); s.add_argument("--title")
     s.add_argument("--allow-failing", action="store_true"); s.add_argument("--fetch", action="store_true")
     s.set_defaults(fn=cmd_git)
+
+    s = sub.add_parser("stats"); s.add_argument("name"); s.set_defaults(fn=cmd_stats)
+    s = sub.add_parser("readme"); s.add_argument("name"); s.set_defaults(fn=cmd_readme)
+    s = sub.add_parser("plan"); s.add_argument("name"); s.add_argument("--step", action="append")
+    s.add_argument("--add", action="append"); s.set_defaults(fn=cmd_plan)
+    s = sub.add_parser("step"); s.add_argument("name"); s.add_argument("number", type=int); s.set_defaults(fn=cmd_step)
+    s = sub.add_parser("estimate"); s.add_argument("name"); s.set_defaults(fn=cmd_estimate)
 
     s = sub.add_parser("list"); s.set_defaults(fn=cmd_list)
 

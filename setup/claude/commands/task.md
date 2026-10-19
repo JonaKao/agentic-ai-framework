@@ -28,6 +28,12 @@ Use `P` for the project name below. Report every phase change with
   it fails now.
 - If you make a non-obvious choice (approach, library, threshold), record it with
   `python3 framework/aaf.py decide P "<title>" "<why, and what you rejected>"`.
+- Record your plan as 3 to 8 concrete steps, in order, each one something you can
+  finish and recognise as finished:
+  `python3 framework/aaf.py plan P --step "<step 1>" --step "<step 2>" ...`
+  Tick each one off the moment it is done: `python3 framework/aaf.py step P <number>`.
+  If the work turns out bigger, add steps with `python3 framework/aaf.py plan P --add "<step>"`
+  rather than hiding it. The dashboard's time estimate is built from these steps.
 
 ## 3. Loop
 
@@ -71,6 +77,10 @@ Skip this step if the task text says not to fix follow-ups, or if `fix_iteration
 ## 5. Finish
 
 - Update `projects/P/state/progress.md`: what was done, what is next, open issues.
+- Update `projects/P/README.md` wherever the task changed what the project does, how to
+  run it, or how it is built. Write for someone who has never seen the project. Leave
+  the generated sections between `<!-- aaf:... -->` markers alone; `aaf.py git commit`
+  refreshes them. If the README is missing, create it from `template/README.md`.
 - Set the final phase: `waiting` if any drafts from step 4 need a decision, otherwise
   `done` (or `stuck`), with a one-line `--note`.
 - If `projects/P/.git` exists and the phase is `done` or `waiting`, run

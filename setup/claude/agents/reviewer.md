@@ -21,6 +21,8 @@ You receive: a project path, the task text, and the list of changed files.
      wrong set, seeds that hide variance, plots that contradict the numbers
      (open images in `plots/` with the Read tool)
    - Changes outside the project folder or outside the task's scope
+   - A README.md that no longer matches the project: a new feature, command or part
+     that is missing from it, or text that describes how things used to be
 4. Do not edit any files.
 
 Answer in exactly this format:
