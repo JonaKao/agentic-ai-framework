@@ -167,6 +167,39 @@ def describe(data, project):
     return "other", "Using %s" % (tool or "a tool"), ""
 
 
+def record_usage(data, project):
+    """On Stop: total the session's token usage from its transcript and append it to
+    state/usage.jsonl (cumulative per session). Best effort; the transcript may lag."""
+    path = data.get("transcript_path")
+    if not path or not os.path.isfile(path):
+        return
+    seen, tot = set(), {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    with open(path) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            msg = rec.get("message") if isinstance(rec, dict) else None
+            if not isinstance(msg, dict) or not isinstance(msg.get("usage"), dict):
+                continue
+            key = msg.get("id") or rec.get("requestId") or rec.get("uuid")
+            if key in seen:
+                continue
+            seen.add(key)
+            u = msg["usage"]
+            tot["input"] += int(u.get("input_tokens") or 0)
+            tot["output"] += int(u.get("output_tokens") or 0)
+            tot["cache_read"] += int(u.get("cache_read_input_tokens") or 0)
+            tot["cache_write"] += int(u.get("cache_creation_input_tokens") or 0)
+    if not any(tot.values()):
+        return
+    out = os.path.join(PROJECTS, project, "state", "usage.jsonl")
+    rec = {"ts": now(), "session": data.get("session_id", ""), **tot}
+    with open(out, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -188,6 +221,11 @@ def main():
         rec["quiet"] = True
     if data.get("agent_type") or data.get("agent_id"):
         rec["subagent"] = data.get("agent_type") or "subagent"
+    if data.get("hook_event_name") == "Stop":
+        try:
+            record_usage(data, project)
+        except Exception:
+            pass
     path = os.path.join(PROJECTS, project, "state", "activity.jsonl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as f:

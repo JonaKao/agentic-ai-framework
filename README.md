@@ -26,9 +26,21 @@ live dashboard.
 3. Start the dashboard: double-click `Open Dashboard.command`, or run
    `python3 dashboard/server.py` and open http://localhost:8765.
 4. In Claude Code:
+   - `/spec my-model <idea>` first for anything large, or
    - `/new-project my-model` for a new project, or
    - `/onboard practical ~/path/to/existing/code` to take over existing code
    - then `/task my-model add a validation split and report validation loss`
+
+## Extras the agents use
+
+- **Python language server**: `brew install pyright` once. The `pyright-lsp` plugin
+  (enabled in `.claude/settings.json`) then reports type errors right after each edit.
+- **Context7** (`.mcp.json`): current library documentation for the agents.
+- **Sandbox**: shell commands run inside Claude Code's sandbox, with network access
+  limited to GitHub, PyPI, Hugging Face, PyTorch and the Playwright downloads. The
+  framework tool and its checks run outside it.
+- **Hooks**: `framework/hooks/activity.py` feeds the dashboard and records token usage;
+  `framework/hooks/gate.py` keeps a `/task` running until it ends on the record.
 
 ## Git and GitHub
 

@@ -1,67 +1,34 @@
-# Agentic AI Framework — workspace instructions
+# Agentic AI Framework
 
-This folder is a workspace for running coding agents on projects with as little
-supervision as possible. Every project lives in `projects/<name>/` and carries its
-own context files. Read this file first, then the project's files.
+A workspace for running coding agents on projects with little supervision. Every project
+lives in `projects/<name>/` with its own `CLAUDE.md`, `DONE.md` and `state/`. Read the
+project's files before working on it. Command and file details: `framework/REFERENCE.md`.
 
-## Layout
+## Rules
 
-| Path | What it is |
-|---|---|
-| `projects/<name>/CLAUDE.md` | How to work on that project: run, test, conventions, no-go zones |
-| `projects/<name>/DONE.md` | The definition of done. A task is finished only when every item holds |
-| `projects/<name>/project.json` | The project's checks (commands that must exit 0), `max_iterations` per task and `fix_iterations` per follow-up fix |
-| `projects/<name>/state/` | Progress note, decisions log, status, check results, reviews. The dashboard reads this |
-| `projects/<name>/plots/` | Plots produced by the project. Shown on the dashboard |
-| `framework/aaf.py` | The one CLI for recording state: `new`, `check`, `status`, `decide`, `review`, `snapshot`, `restore`, `draft`, `git`, `stats` |
-| `framework/hooks/activity.py` | Claude Code hook that logs each step the agent takes to `projects/<name>/state/activity.jsonl` for the live activity feed. Runs in the background; never edit its output by hand |
-| `projects/control-room/` | The dashboard itself, as a project agents can improve. Start it with `python3 dashboard/server.py` (a shim), then open http://localhost:8765 |
-| `template/` | Files copied into every new project |
-
-## Rules that apply to every project
-
-1. **State lives in files, not in the conversation.** At the start of work, read the
-   project's `CLAUDE.md`, `DONE.md`, `state/progress.md` and `state/decisions.md`.
-   At the end, update `state/progress.md`.
-2. **Report state through `framework/aaf.py`**, never by editing `state/*.json` by hand.
-   The dashboard depends on it:
-   - `python3 framework/aaf.py status <project> --phase <phase> [--task "..."] [--iteration N] [--note "..."]`
-     with phase one of `planning`, `implementing`, `checking`, `reviewing`, `fixing`, `waiting`
-     (a draft needs the human), `done`, `stuck`, `idle`
-   - `python3 framework/aaf.py check <project>` runs all checks and records the results
-   - `python3 framework/aaf.py decide <project> "Title" "Why, and what was rejected"`
-   - `python3 framework/aaf.py review <project> --verdict pass|fail --summary "..." [--file report.md]`
-3. **"Correct" means the checks pass.** If a task's success is not covered by a check,
-   add one first and make sure it fails before you start implementing.
-4. **Never weaken a check to make it pass.** Do not delete, skip, loosen or special-case
-   tests or thresholds unless the task explicitly asks for it. If a check is wrong,
-   record a decision explaining why and say so in your final report.
-5. **Look at your plots.** When a task produces plots, write them to the project's
-   `plots/` folder, open them with the Read tool, and note anything irregular.
-   When the same irregularity keeps appearing, turn it into a numeric check.
+1. **State lives in files.** Start by reading the project's `CLAUDE.md`, `DONE.md`,
+   `state/progress.md` and `state/decisions.md`; end by updating `state/progress.md`.
+2. **Record state only through `python3 framework/aaf.py`** (status, check, decide,
+   review, plan, feature, git). Never edit `state/*.json` or `features.json` by hand.
+3. **Correct means the checks pass.** If a task's success is not covered by a check,
+   add one first and confirm it fails.
+4. **Never weaken a check** (delete, skip, loosen, special-case) unless the task says so.
+   If a check is wrong, record a decision and say so.
+5. **Look at your plots** and screenshots with the Read tool before claiming success.
 6. **Stay inside the project folder** unless the task says otherwise.
-7. **Never leave a project broken.** Before any risky change, take a snapshot
-   (`aaf.py snapshot`). A fix that does not work out is saved as a draft and the
-   snapshot is restored (`aaf.py draft save`, then `aaf.py restore`), so the project
-   always ends in a state where every check passes.
-8. **Git goes through the framework.** Each project is its own repository (usually a
-   private GitHub repo). Use `aaf.py git pull|commit|push|info`, never `git commit` or
-   `git push` directly, and never force-push or rewrite history. `aaf.py git commit`
-   refuses while checks fail, writes the message from the recorded task, decisions,
-   checks and review, and pushes. Live dashboard files and drafts stay local.
-9. **Keep the README alive.** Every project has a `README.md` that describes it as it
-   is now. Update it at the end of any task that changes what the project does, how to
-   run it or how it is built. The sections between `<!-- aaf:history:... -->` and
-   `<!-- aaf:checks:... -->` markers are generated on every commit; never edit them by hand.
-10. **Stop honestly.** If the same failure repeats three times, or the iteration limit
-   in `project.json` is reached, set phase `stuck` and report what you tried, the
-   evidence, and what you need from the human.
+7. **Never leave a project broken.** Snapshot before risky changes; a fix that fails
+   becomes a draft and the snapshot is restored.
+8. **Git only through `aaf.py git`.** No direct `git commit` or `git push`, no force-push.
+9. **Keep the README current** when a task changes what the project does, how to run
+   it or how it is built.
+10. **Ask through the record.** While a task is active, a Stop hook keeps you working.
+    To ask the human something, set `--phase waiting --note "Question: ..."` first.
+11. **Stop honestly.** Same failure three times, or the iteration limit: set `stuck`
+    and report what you tried and what you need.
 
 ## Commands
 
-- `/new-project <name> [description]`: scaffold a fresh project
-- `/onboard <name> <path-to-existing-code>`: take over an existing codebase
-- `/task <name> <what to do>`: run a task until the definition of done holds, then
-  attempt the reviewer's minor findings safely
-- `/fix <name> [issues]`: attempt specific issues, rolling back to a draft on failure
-- `/draft <name> continue|discard <id>`: decide what happens to a saved fix attempt
+- `/spec <name> <idea>`: interview the human and write a spec with features (large work)
+- `/task <name> <what to do>` or `/task <name> next`: run until the definition of done holds
+- `/fix <name> [issues]` and `/draft <name> continue|discard <id>`: follow-up fixes
+- `/new-project <name>` and `/onboard <name> <path>`: start or take over a project

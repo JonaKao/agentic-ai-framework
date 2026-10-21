@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Bash(python3 framework/aaf.py:*)",
@@ -6,6 +7,34 @@
       "Bash(python3 -m pytest:*)"
     ]
   },
+  "sandbox": {
+    "enabled": true,
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "api.github.com",
+        "*.githubusercontent.com",
+        "codeload.github.com",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "playwright.azureedge.net",
+        "playwright.download.prss.microsoft.com",
+        "cdn.playwright.dev",
+        "huggingface.co",
+        "*.huggingface.co",
+        "download.pytorch.org"
+      ]
+    },
+    "excludedCommands": [
+      "python3 framework/aaf.py *"
+    ]
+  },
+  "enabledPlugins": {
+    "pyright-lsp@claude-plugins-official": true
+  },
+  "enabledMcpjsonServers": [
+    "context7"
+  ],
   "hooks": {
     "PreToolUse": [
       {
@@ -67,6 +96,15 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR/framework/hooks/activity.py\"",
             "async": true,
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/framework/hooks/gate.py\"",
+            "timeout": 15
           }
         ]
       }

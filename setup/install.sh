@@ -3,4 +3,4 @@
 cd "$(dirname "$0")/.."
 mkdir -p .claude
 cp -R setup/claude/. .claude/
-echo "Installed /task, /fix, /draft, /new-project, /onboard and the reviewer agent into .claude/"
+echo "Installed the commands (/spec, /task, /fix, /draft, /new-project, /onboard), the reviewer and mapper agents, and the settings into .claude/"

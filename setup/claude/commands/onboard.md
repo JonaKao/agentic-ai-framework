@@ -11,8 +11,11 @@ an agent can work on without supervision. Do not change the code's behaviour her
 1. Run `python3 framework/aaf.py new <name> --from "<path>"`. This copies the code
    into `projects/<name>/` and adds the framework files without overwriting anything.
 2. `status <name> --phase planning --task "Onboard existing codebase"`.
-3. Explore the code: entry points, dependencies, how it is built and run, existing
-   tests, data it expects. Record what you learn in `projects/<name>/CLAUDE.md`.
+3. Explore the code with the `mapper` subagent, so the reading stays out of your own
+   context: give it the project path and ask for a map. It writes
+   `projects/<name>/state/codebase-map.md` (entry points, modules, dependencies, how to
+   run and test, data, risky areas). Read the map, check anything that looks uncertain,
+   and record what matters for working on the code in `projects/<name>/CLAUDE.md`.
 4. Establish a baseline:
    - Get the code to run as it is. Record any setup you needed.
    - Register the existing tests as checks in `project.json`. If there are none, add a
@@ -25,7 +28,7 @@ an agent can work on without supervision. Do not change the code's behaviour her
 6. Write `state/progress.md`: a map of the codebase (main modules, one line each), known
    issues, and the risky areas a future task should be careful with.
 7. Record noteworthy findings with `aaf.py decide` (e.g. "Kept Python 3.8 because ...").
-8. Ask the human whether to put the onboarded project on GitHub as a new private
+8. Set `status <name> --phase waiting --note "Question: put it on GitHub?"`, then ask the human whether to put the onboarded project on GitHub as a new private
    repository. If yes: `python3 framework/aaf.py git init <name>`. If the baseline
    checks failed, tell the human that this first commit holds the inherited code with
    its known failures, as listed in `progress.md`.

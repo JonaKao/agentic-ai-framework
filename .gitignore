@@ -25,3 +25,6 @@ projects/*/
 state/activity.jsonl
 state/plan.json
 state/estimates.jsonl
+
+# Added by the Agentic AI Framework
+state/usage.jsonl

@@ -8,6 +8,13 @@ Input: $ARGUMENTS
 The first word is the project name; the rest is the task. The project lives in
 `projects/<project>/`. If it does not exist, list the folders in `projects/` and stop.
 
+If the task is just `next`, take the next unfinished feature from the project's feature
+list: `python3 framework/aaf.py feature next <project>`. Its title and criteria are the
+task, and its spec file (if any) is required reading. If the task names a spec file, read
+it first and work from it. When a feature's criteria are met and checked end to end, mark
+it with `python3 framework/aaf.py feature pass <project> <ID> --evidence "<the check that proves it>"`
+before finishing. Never edit or remove features; if one is wrong, say so in your report.
+
 Use `P` for the project name below. Report every phase change with
 `python3 framework/aaf.py status P --phase <phase> ...` so the dashboard stays live.
 
@@ -18,8 +25,10 @@ Use `P` for the project name below. Report every phase change with
 - Run `python3 framework/aaf.py status P --phase planning --task "<the task, one line>" --iteration 0`.
 - If `projects/P/.git` exists, run `python3 framework/aaf.py git pull P` to start from
   the latest version on GitHub. If it reports diverged histories, stop and ask the human.
-- Run `python3 framework/aaf.py check P` once to get a baseline. Note which checks
-  already fail before you change anything.
+- Run `python3 framework/aaf.py check P` once to get a baseline (a smoke test). Note
+  which checks already fail before you change anything, and fix existing breakage
+  before starting new work. If `projects/P/features.json` exists, run
+  `python3 framework/aaf.py feature list P` too.
 
 ## 2. Make the task checkable
 
@@ -59,14 +68,19 @@ during the loop and open them with the Read tool before declaring success.
 
 ## Guardrails
 
+- A Stop hook keeps this task running while the phase is active. To pause and ask the
+  human something, first set `status P --phase waiting --note "Question: <question>"`,
+  then ask. When they answer, set the phase back and continue.
+
 - Never weaken, skip or delete a check to make it pass (see the workspace CLAUDE.md).
 - The same failure three times in a row, or reaching `max_iterations`, means stuck:
   `status P --phase stuck --note "<one line on what blocks you>"`, then go to step 5.
 
 ## 4. Attempt the minor findings
 
-If the reviewer passed the change but listed minor findings, try to fix them now,
-safely. Read `.claude/commands/fix.md` and follow it for this project, with the
+If the reviewer passed the change but listed **minor** findings, try to fix them now,
+safely. Findings marked **note** are not fixed: record them under "Next" in
+`progress.md` and leave them for the human to decide. Read `.claude/commands/fix.md` and follow it for this project, with the
 reviewer's minor findings as the input. It snapshots the working state first, gives
 each fix a limited number of iterations, and rolls back to the passing state if a fix
 does not work out, keeping the attempt as a draft for the human.

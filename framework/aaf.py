@@ -24,6 +24,9 @@ Usage (from the workspace root):
   python3 framework/aaf.py plan <name> --step TEXT [--step TEXT ...] | --add TEXT
   python3 framework/aaf.py step <name> N
   python3 framework/aaf.py estimate <name>
+  python3 framework/aaf.py feature add <name> --title TEXT [--criteria TEXT] [--spec PATH]
+  python3 framework/aaf.py feature list|next <name>
+  python3 framework/aaf.py feature pass <name> ID --evidence TEXT | fail <name> ID [--evidence TEXT]
   python3 framework/aaf.py list
 
 Standard library only; runs on the Python 3.9 that ships with macOS.
@@ -454,6 +457,7 @@ state/git.json
 state/activity.jsonl
 state/plan.json
 state/estimates.jsonl
+state/usage.jsonl
 *.tmp
 .venv/
 venv/
@@ -860,6 +864,7 @@ def task_stats(pdir):
         impl = [p["iteration"] for p in t["phases"] if p["phase"] == "implementing" and p["iteration"]]
         t["first_try"] = bool(impl) and max(impl) == 1 and bool(t["reviews"]) and t["reviews"][0] == "pass"
 
+    _add_usage(pdir, tasks)
     finished = [t for t in tasks if t["outcome"] in END_PHASES]
     reviews = [v for t in tasks for v in t["reviews"]]
     attempts = sorted(t["attempts"] for t in finished)
@@ -874,9 +879,46 @@ def task_stats(pdir):
         "review_fails": sum(1 for v in reviews if v == "fail"),
         "drafts": sum(t["drafts"] for t in tasks),
         "times_stuck": sum(t["times_stuck"] for t in tasks),
+        "tokens_output": sum((t["tokens"] or {}).get("output", 0) for t in tasks) or None,
+        "tokens_input_total": sum(sum(v for k, v in (t["tokens"] or {}).items() if k != "output")
+                                  for t in tasks) or None,
         "median_attempts": attempts[len(attempts) // 2] if attempts else None,
     }
     return {"summary": summary, "tasks": tasks}
+
+
+def _add_usage(pdir, tasks):
+    """Tokens per task from state/usage.jsonl (cumulative per session, written by the
+    activity hook at the end of each turn): for each session, the total at the task's end
+    minus the total before it started."""
+    rows = []
+    try:
+        with open(os.path.join(pdir, "state", "usage.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                    r["_t"] = _parse_ts(r.get("ts"))
+                    if r["_t"]:
+                        rows.append(r)
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    fields = ("input", "output", "cache_read", "cache_write")
+    for t in tasks:
+        a = _parse_ts(t["start"])
+        b = _parse_ts(t["end"]) or dt.datetime.now().astimezone()
+        tot = dict.fromkeys(fields, 0)
+        for sess in {r["session"] for r in rows}:
+            mine = [r for r in rows if r["session"] == sess]
+            before = [r for r in mine if r["_t"] < a]
+            inside = [r for r in mine if a <= r["_t"] <= b]
+            if not inside:
+                continue
+            base = before[-1] if before else dict.fromkeys(fields, 0)
+            for k in fields:
+                tot[k] += max(0, int(inside[-1].get(k, 0)) - int(base.get(k, 0)))
+        t["tokens"] = tot if any(tot.values()) else None
 
 
 def cmd_stats(args):
@@ -1115,6 +1157,74 @@ def cmd_estimate(args):
     print(json.dumps(estimate(project_dir(args.name)), indent=2))
 
 
+# ---------------------------------------------------------------- features
+#
+# For projects that span many sessions: a list of end-to-end features, each with a pass
+# flag (after Anthropic's long-running harness). Features can be added and flipped, never
+# edited or removed, so an agent cannot quietly shrink the goal.
+
+def _features_path(pdir):
+    return os.path.join(pdir, "features.json")
+
+
+def _load_features(pdir):
+    return read_json(_features_path(pdir), {"features": []})
+
+
+def cmd_feature(args):
+    pdir = project_dir(args.name)
+    data = _load_features(pdir)
+    feats = data["features"]
+
+    if args.action == "add":
+        if not args.title:
+            die("feature add needs a title")
+        fid = "F%d" % (max([int(f["id"][1:]) for f in feats] or [0]) + 1)
+        feats.append({"id": fid, "title": args.title.strip(), "criteria": args.criteria or "",
+                      "spec": args.spec or "", "passes": False, "added": now(), "passed_at": None,
+                      "evidence": ""})
+        write_json(_features_path(pdir), data)
+        event(pdir, "feature", "Feature %s added: %s" % (fid, args.title.strip()), feature=fid, action="add")
+        print("Added %s: %s" % (fid, args.title.strip()))
+        return
+
+    if args.action == "list":
+        if not feats:
+            print("No features yet.")
+        for f in feats:
+            print("%s  %s  %s" % (f["id"], "PASS" if f["passes"] else "....", f["title"]))
+        done = sum(1 for f in feats if f["passes"])
+        print("\n%d of %d features pass." % (done, len(feats)))
+        return
+
+    if args.action == "next":
+        nxt = next((f for f in feats if not f["passes"]), None)
+        if not nxt:
+            print("All features pass." if feats else "No features yet.")
+            return
+        print(json.dumps(nxt, indent=2))
+        return
+
+    f = next((x for x in feats if x["id"] == args.id), None)
+    if not f:
+        die("no feature %r" % args.id)
+    if args.action == "pass":
+        ck = read_json(os.path.join(pdir, "state", "checks.json"), {})
+        if not ck.get("passed"):
+            die("refusing: the latest check run did not pass. Run `aaf.py check %s` first." % args.name)
+        if not args.evidence:
+            die("feature pass needs --evidence (the check or test that proves it end to end)")
+        f.update({"passes": True, "passed_at": now(), "evidence": args.evidence})
+        text = "Feature %s passes: %s" % (f["id"], f["title"])
+    else:  # fail: a regression found later
+        f.update({"passes": False, "passed_at": None,
+                  "evidence": "regressed: " + (args.evidence or "no reason given")})
+        text = "Feature %s fails again: %s" % (f["id"], f["title"])
+    write_json(_features_path(pdir), data)
+    event(pdir, "feature", text, feature=f["id"], action=args.action)
+    print(text)
+
+
 # ---------------------------------------------------------------- readme
 #
 # A project's README.md is written by the agent, but two sections are generated here
@@ -1236,6 +1346,10 @@ def main():
     s.add_argument("--add", action="append"); s.set_defaults(fn=cmd_plan)
     s = sub.add_parser("step"); s.add_argument("name"); s.add_argument("number", type=int); s.set_defaults(fn=cmd_step)
     s = sub.add_parser("estimate"); s.add_argument("name"); s.set_defaults(fn=cmd_estimate)
+    s = sub.add_parser("feature"); s.add_argument("action", choices=["add", "list", "next", "pass", "fail"])
+    s.add_argument("name"); s.add_argument("id", nargs="?"); s.add_argument("--title")
+    s.add_argument("--criteria"); s.add_argument("--spec"); s.add_argument("--evidence")
+    s.set_defaults(fn=cmd_feature)
 
     s = sub.add_parser("list"); s.set_defaults(fn=cmd_list)
 

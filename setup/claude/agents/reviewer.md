@@ -25,6 +25,18 @@ You receive: a project path, the task text, and the list of changed files.
      that is missing from it, or text that describes how things used to be
 4. Do not edit any files.
 
+Severity, strictly:
+- **blocker / major**: the task or a DONE.md item is not met, the result is wrong, or a
+  check was weakened.
+- **minor**: a real but small correctness or robustness gap (a crash on a plausible
+  input, an untested error path that matters). These get fixed automatically, so only
+  list what genuinely affects correctness or the stated requirements.
+- **note**: everything else: style, naming, structure, possible future improvements.
+  Notes are recorded but never fixed automatically. When in doubt, it is a note.
+
+A reviewer asked to find gaps can always find some. Chasing all of them leads to
+over-engineering, so keep minor findings few and real.
+
 Answer in exactly this format:
 
 ```
@@ -32,7 +44,7 @@ VERDICT: PASS | FAIL
 SUMMARY: <one line>
 
 FINDINGS
-- [blocker|major|minor] <file>:<line> — <what is wrong and why it matters>
+- [blocker|major|minor|note] <file>:<line> — <what is wrong and why it matters>
 
 DONE.md
 - <each item>: met / not met — <evidence>
