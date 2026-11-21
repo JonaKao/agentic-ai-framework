@@ -46,6 +46,12 @@ import sys
 import tarfile
 import time
 
+WINDOWS = os.name == "nt"
+if WINDOWS:  # the console/pipe default (cp1252) cannot print most of what we write
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECTS = os.path.join(ROOT, "projects")
 TEMPLATE = os.path.join(ROOT, "template")
@@ -76,7 +82,7 @@ def project_dir(name, must_exist=True):
 
 def read_json(path, default):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return default
@@ -85,7 +91,7 @@ def read_json(path, default):
 def write_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp, path)
@@ -93,7 +99,7 @@ def write_json(path, data):
 
 def append_jsonl(path, record):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
 
@@ -132,11 +138,11 @@ def cmd_new(args):
                     target = os.path.join(target_dir, "CLAUDE.framework.md")
                 else:
                     continue
-            with open(os.path.join(dirpath, fn)) as f:
+            with open(os.path.join(dirpath, fn), encoding="utf-8") as f:
                 text = f.read()
             for k, v in subs.items():
                 text = text.replace(k, v)
-            with open(target, "w") as f:
+            with open(target, "w", encoding="utf-8") as f:
                 f.write(text)
 
     for sub in ("plots", os.path.join("state", "reviews")):
@@ -160,6 +166,33 @@ def cmd_new(args):
 
 # ---------------------------------------------------------------- check
 
+def git_bash():
+    """Git for Windows' bash.exe (not WSL's System32\\bash.exe), or None."""
+    cands = [os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")]
+    git = shutil.which("git")
+    if git:  # ...\Git\cmd\git.exe -> ...\Git\bin\bash.exe
+        cands.append(os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe"))
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432"), os.environ.get("LOCALAPPDATA")):
+        if base:
+            cands += [os.path.join(base, "Git", "bin", "bash.exe"),
+                      os.path.join(base, "Programs", "Git", "bin", "bash.exe")]
+    return next((c for c in cands if c and os.path.isfile(c)), None)
+
+
+def shell_cmd(cmd):
+    """A project.json check command, runnable on this OS.
+
+    Checks are written for a POSIX shell with the venv's interpreter at .venv/bin/python
+    (macOS, Linux). On Windows they run in Git Bash, with .venv/bin/ read as .venv/Scripts/."""
+    if not WINDOWS:
+        return cmd
+    cmd = re.sub(r"(^|[\s\"'=(;&|])(\.?venv)/bin/", r"\1\2/Scripts/", cmd)
+    bash = git_bash()
+    if not bash:
+        die("on Windows the checks run in Git Bash; install Git for Windows")
+    return [bash, "-c", cmd]
+
+
 def tail(text, limit=4000):
     text = text or ""
     return text if len(text) <= limit else "...\n" + text[-limit:]
@@ -177,8 +210,8 @@ def cmd_check(args):
         timeout = chk.get("timeout", 600)
         t0 = time.time()
         try:
-            proc = subprocess.run(chk["cmd"], shell=True, cwd=pdir, capture_output=True,
-                                  text=True, timeout=timeout)
+            proc = subprocess.run(shell_cmd(chk["cmd"]), shell=not WINDOWS, cwd=pdir, capture_output=True,
+                                  text=True, timeout=timeout, encoding="utf-8", errors="replace")
             passed = proc.returncode == 0
             output = (proc.stdout or "") + (proc.stderr or "")
             code = proc.returncode
@@ -238,7 +271,7 @@ def cmd_decide(args):
     pdir = project_dir(args.name)
     path = os.path.join(pdir, "state", "decisions.md")
     day = dt.date.today().isoformat()
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write("\n## %s: %s\n\n%s\n" % (day, args.title.strip(), args.rationale.strip()))
     event(pdir, "decision", args.title.strip(), title=args.title.strip())
     print("Recorded decision: " + args.title)
@@ -251,7 +284,7 @@ def cmd_review(args):
     report = ""
     if args.file:
         try:
-            with open(args.file) as f:
+            with open(args.file, encoding="utf-8") as f:
                 report = f.read()
         except OSError as e:
             die("cannot read report: %s" % e)
@@ -387,7 +420,7 @@ def cmd_draft(args):
         notes = ""
         if args.notes:
             try:
-                with open(args.notes) as f:
+                with open(args.notes, encoding="utf-8") as f:
                     notes = f.read()
             except OSError as e:
                 die("cannot read notes: %s" % e)
@@ -485,7 +518,7 @@ TRAILER_RE = re.compile(r"^([A-Za-z][A-Za-z-]*): (.+)$")
 
 def run(cmd, cwd, check=True):
     try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         die("%s is not installed" % cmd[0])
     if check and proc.returncode != 0:
@@ -501,14 +534,14 @@ def ensure_gitignore(path, extra=""):
     gi = os.path.join(path, ".gitignore")
     wanted = GITIGNORE + extra
     if not os.path.exists(gi):
-        with open(gi, "w") as f:
+        with open(gi, "w", encoding="utf-8") as f:
             f.write(wanted)
         return
-    existing = open(gi).read()
+    existing = open(gi, encoding="utf-8").read()
     have = set(existing.splitlines())
     missing = [l for l in wanted.splitlines() if l and not l.startswith("#") and l not in have]
     if missing:
-        with open(gi, "a") as f:
+        with open(gi, "a", encoding="utf-8") as f:
             f.write(("" if existing.endswith("\n") else "\n") + "\n# Added by the Agentic AI Framework\n"
                     + "\n".join(missing) + "\n")
 
@@ -580,7 +613,7 @@ def git_commit_framework(args):
         parts = l.split("\t")
         lines.append("- %s %s" % (words.get(parts[0][:1], parts[0]), parts[-1]))
     msg = title + "\n\nFiles:\n" + "\n".join(lines) + "\n"
-    proc = subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=ROOT, input=msg, text=True, capture_output=True)
+    proc = subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=ROOT, input=msg, text=True, capture_output=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         die("git commit failed:\n" + (proc.stderr or proc.stdout))
     short = run(["git", "rev-parse", "--short", "HEAD"], ROOT).stdout.strip()
@@ -594,7 +627,7 @@ def git_commit_framework(args):
 
 def _decisions(pdir):
     try:
-        md = open(os.path.join(pdir, "state", "decisions.md")).read()
+        md = open(os.path.join(pdir, "state", "decisions.md"), encoding="utf-8").read()
     except OSError:
         return []
     out = []
@@ -663,7 +696,7 @@ def git_commit(args):
     gj["decisions_committed"] = n_dec
     write_json(gj_path, gj)
     run(["git", "add", "-A"], pdir)
-    proc = subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=pdir, input=msg, text=True, capture_output=True)
+    proc = subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=pdir, input=msg, text=True, capture_output=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         die("git commit failed:\n" + (proc.stderr or proc.stdout))
     short = run(["git", "rev-parse", "--short", "HEAD"], pdir).stdout.strip()
@@ -774,7 +807,7 @@ def mirror_sync(pdir, cfg=None):
         body = run(["git", "log", "-1", "--format=%B"], pdir).stdout.strip()
         msg = "%s\n\nMirrored into %s/ from %s at %s.\n" % (body, path, src, sha[:7])
         proc = subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=wd, input=msg, text=True,
-                              capture_output=True)
+                              capture_output=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             die("mirror commit failed:\n" + (proc.stderr or proc.stdout))
         proc = run(["git", "push", "-q", "origin", "HEAD:refs/heads/" + branch], wd, check=False)
@@ -909,7 +942,7 @@ def _status_fields(e):
 def _read_events(pdir):
     out = []
     try:
-        with open(os.path.join(pdir, "state", "events.jsonl")) as f:
+        with open(os.path.join(pdir, "state", "events.jsonl"), encoding="utf-8") as f:
             for line in f:
                 try:
                     out.append(json.loads(line))
@@ -1015,7 +1048,7 @@ def _add_usage(pdir, tasks):
     minus the total before it started."""
     rows = []
     try:
-        with open(os.path.join(pdir, "state", "usage.jsonl")) as f:
+        with open(os.path.join(pdir, "state", "usage.jsonl"), encoding="utf-8") as f:
             for line in f:
                 try:
                     r = json.loads(line)
@@ -1173,7 +1206,7 @@ def _calibration(pdir_filter=None):
             if t["outcome"] in ("done", "waiting") and t["end"]:
                 ends[t["start"]] = t["end"]
         try:
-            with open(os.path.join(pdir, "state", "estimates.jsonl")) as f:
+            with open(os.path.join(pdir, "state", "estimates.jsonl"), encoding="utf-8") as f:
                 rows = [json.loads(l) for l in f if l.strip()]
         except (OSError, ValueError):
             continue
@@ -1394,7 +1427,7 @@ def update_readme(pdir):
     path = os.path.join(pdir, "README.md")
     if not os.path.exists(path):
         return False
-    text = open(path).read()
+    text = open(path, encoding="utf-8").read()
     new = text
     for name, fn in (("history", _readme_history), ("checks", _readme_checks)):
         start, end = "<!-- aaf:%s:start -->" % name, "<!-- aaf:%s:end -->" % name
@@ -1403,7 +1436,7 @@ def update_readme(pdir):
             continue
         new = new[:i + len(start)] + "\n" + fn(pdir) + "\n" + new[j:]
     if new != text:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(new)
         return True
     return False
@@ -1428,7 +1461,7 @@ ACTIVE_PHASES = {"planning", "implementing", "checking", "reviewing", "fixing"}
 
 def read_jsonl_tail(path, n):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()[-n:]
     except OSError:
         return []
@@ -1478,7 +1511,7 @@ def brief(pdir):
     st = read_json(os.path.join(pdir, "state", "status.json"), {})
     readme = ""
     try:
-        readme = open(os.path.join(pdir, "README.md")).read()
+        readme = open(os.path.join(pdir, "README.md"), encoding="utf-8").read()
     except OSError:
         pass
     rs = _md_sections(readme)
@@ -1489,7 +1522,7 @@ def brief(pdir):
 
     prog = ""
     try:
-        prog = open(os.path.join(pdir, "state", "progress.md")).read()
+        prog = open(os.path.join(pdir, "state", "progress.md"), encoding="utf-8").read()
     except OSError:
         pass
     ps = _md_sections(prog)

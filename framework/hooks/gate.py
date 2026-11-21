@@ -30,7 +30,7 @@ STALE_HOURS = 6
 
 def read_json(path, default=None):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return default
@@ -64,7 +64,7 @@ def active_project(session):
 
 
 def main():
-    data = json.load(sys.stdin)
+    data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))  # UTF-8 on Windows too
     session = data.get("session_id", "")
     found = active_project(session)
     counter_path = session_file(session, "-gate")
@@ -79,7 +79,7 @@ def main():
     if nudges > MAX_NUDGES:
         return
     os.makedirs(SESSIONS, exist_ok=True)
-    with open(counter_path, "w") as f:
+    with open(counter_path, "w", encoding="utf-8") as f:
         json.dump({"key": key, "nudges": nudges}, f)
 
     checks = read_json(os.path.join(PROJECTS, name, "state", "checks.json"), {}) or {}

@@ -20,7 +20,8 @@ live dashboard.
 ## Start
 
 1. Run `bash setup/install.sh` once (or just double-click `Open Dashboard.command`,
-   which does it for you). It installs the agent commands into `.claude/`.
+   which does it for you). It installs the agent commands into `.claude/`. Without bash
+   (Windows): `python3 setup/install.py`, which also writes `.mcp.json`.
 2. Install Claude Code (see https://docs.claude.com/en/docs/claude-code), then open a
    terminal in this folder and run `claude`.
 3. Start the dashboard: double-click `Open Dashboard.command`, or run
@@ -75,3 +76,10 @@ then `gh auth login`).
 
 `python3` (macOS asks to install the Command Line Tools the first time you run it).
 Nothing else.
+
+**Windows:** install Git for Windows and Python 3 (e.g. `winget install Git.Git
+Python.Python.3.12`). Hooks, commands and permissions call `python3`, so put Python first
+on the user PATH (ahead of `...\WindowsApps`, whose `python3` is only a Store stub) and add
+a `python3.exe` copy of `python.exe` in the Python folder. `aaf.py check` runs the
+`project.json` checks in Git Bash and reads `.venv/bin/` as `.venv/Scripts/`, so the same
+`project.json` works on both systems.

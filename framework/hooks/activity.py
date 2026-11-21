@@ -87,10 +87,10 @@ def sticky(session, project=None):
     try:
         if project:
             os.makedirs(SESSIONS, exist_ok=True)
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump({"project": project}, f)
             return project
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f).get("project")
     except (OSError, ValueError):
         return project
@@ -100,7 +100,7 @@ def most_active():
     best, best_t = None, ""
     for p in projects():
         try:
-            with open(os.path.join(PROJECTS, p, "state", "status.json")) as f:
+            with open(os.path.join(PROJECTS, p, "state", "status.json"), encoding="utf-8") as f:
                 st = json.load(f)
         except (OSError, ValueError):
             continue
@@ -174,7 +174,7 @@ def record_usage(data, project):
     if not path or not os.path.isfile(path):
         return
     seen, tot = set(), {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             try:
                 rec = json.loads(line)
@@ -196,13 +196,13 @@ def record_usage(data, project):
         return
     out = os.path.join(PROJECTS, project, "state", "usage.jsonl")
     rec = {"ts": now(), "session": data.get("session_id", ""), **tot}
-    with open(out, "a") as f:
+    with open(out, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
 
 def main():
     try:
-        data = json.load(sys.stdin)
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))  # UTF-8 on Windows too
     except ValueError:
         return
     session = data.get("session_id", "")
@@ -228,12 +228,12 @@ def main():
             pass
     path = os.path.join(PROJECTS, project, "state", "activity.jsonl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
     if os.path.getsize(path) > MAX_BYTES:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()[-KEEP_LINES:]
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
 
