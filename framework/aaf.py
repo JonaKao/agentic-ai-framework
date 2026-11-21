@@ -17,6 +17,7 @@ Usage (from the workspace root):
   python3 framework/aaf.py git commit <name> [--title TEXT] [--allow-failing]
   python3 framework/aaf.py git commit-framework [--title TEXT]
   python3 framework/aaf.py git push|pull <name>
+  python3 framework/aaf.py git mirror <name> [--repo OWNER/NAME --path DIR [--branch B] [--base main]] | --off
   python3 framework/aaf.py git info <name> [--fetch]
   python3 framework/aaf.py git files <name>
   python3 framework/aaf.py stats <name>
@@ -27,6 +28,7 @@ Usage (from the workspace root):
   python3 framework/aaf.py feature add <name> --title TEXT [--criteria TEXT] [--spec PATH]
   python3 framework/aaf.py feature list|next <name>
   python3 framework/aaf.py feature pass <name> ID --evidence TEXT | fail <name> ID [--evidence TEXT]
+  python3 framework/aaf.py brief <name> [--json]
   python3 framework/aaf.py list
 
 Standard library only; runs on the Python 3.9 that ships with macOS.
@@ -37,9 +39,11 @@ import datetime as dt
 import json
 import os
 import re
+import io
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -456,6 +460,7 @@ state/events.jsonl
 state/git.json
 state/activity.jsonl
 state/plan.json
+state/mirror/
 state/estimates.jsonl
 state/usage.jsonl
 *.tmp
@@ -679,6 +684,8 @@ def git_push(args):
             % (args.name, proc.stderr.strip()))
     event(pdir, "git", "Pushed to GitHub")
     print("Pushed to " + (web_url(remote_url(pdir)) or remote_url(pdir)))
+    if read_json(os.path.join(pdir, "state", "git.json"), {}).get("mirror"):
+        mirror_sync(pdir)
 
 
 def git_pull(args):
@@ -696,6 +703,121 @@ def git_pull(args):
             + proc.stderr.strip())
     event(pdir, "git", "Pulled from GitHub")
     print("Up to date with the remote.")
+
+
+# A mirror copies the project's committed files (HEAD) into a folder of another
+# repository, e.g. a team repository, on its own branch with a pull request into the
+# base branch. The project repository stays the source; the mirror folder is
+# overwritten on every sync. Configured once with `git mirror <name> --repo ... --path ...`,
+# then refreshed after every successful push.
+
+def _mirror_cfg(pdir, args=None):
+    gj_path = os.path.join(pdir, "state", "git.json")
+    gj = read_json(gj_path, {})
+    cfg = dict(gj.get("mirror") or {})
+    if args is not None and args.repo:
+        cfg = {"repo": args.repo, "path": args.path, "branch": args.branch or args.path,
+               "base": args.base or "main"}
+    if not cfg:
+        die("no mirror configured. Set one with: aaf.py git mirror <name> --repo OWNER/NAME --path DIR")
+    if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", cfg.get("repo") or ""):
+        die("--repo must be OWNER/NAME, got %r" % cfg.get("repo"))
+    path = (cfg.get("path") or "").strip("/")
+    if not path or path == "." or ".." in path.split("/") or os.path.isabs(cfg.get("path") or ""):
+        die("--path must be a relative folder inside the mirror repository, got %r" % cfg.get("path"))
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_./-]*$", cfg["branch"] or "") or cfg["branch"] == cfg["base"]:
+        die("--branch must be a branch name other than the base branch")
+    cfg["path"] = path
+    if args is not None and args.repo:
+        gj["mirror"] = cfg
+        write_json(gj_path, gj)
+    return cfg
+
+
+def mirror_sync(pdir, cfg=None):
+    cfg = cfg or _mirror_cfg(pdir)
+    repo, path, branch, base = cfg["repo"], cfg["path"], cfg["branch"], cfg["base"]
+    if not is_repo(pdir) or run(["git", "rev-parse", "-q", "--verify", "HEAD"], pdir, check=False).returncode:
+        die("the project has no commits to mirror yet")
+    wd = os.path.join(pdir, "state", "mirror")
+    ensure_gitignore(pdir)          # the clone below must never be committed with the project
+    if not is_repo(wd):
+        shutil.rmtree(wd, ignore_errors=True)
+        run(["gh", "repo", "clone", repo, wd, "--", "-q"], pdir)
+    run(["git", "fetch", "-q", "--prune", "origin"], wd)
+    has_branch = run(["git", "rev-parse", "-q", "--verify", "origin/" + branch], wd, check=False).returncode == 0
+    merged = has_branch and run(["git", "merge-base", "--is-ancestor", "origin/" + branch, "origin/" + base],
+                                wd, check=False).returncode == 0
+    start = "origin/" + (branch if has_branch and not merged else base)
+    run(["git", "checkout", "-q", "-B", branch, start], wd)
+    run(["git", "reset", "-q", "--hard", start], wd)
+    run(["git", "clean", "-qfdx"], wd)
+    # Replace the folder with the project's committed files.
+    dest = os.path.join(wd, path)
+    shutil.rmtree(dest, ignore_errors=True)
+    os.makedirs(dest)
+    tar = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=pdir, capture_output=True)
+    if tar.returncode != 0:
+        die("git archive failed:\n" + tar.stderr.decode(errors="replace"))
+    with tarfile.open(fileobj=io.BytesIO(tar.stdout)) as tf:
+        for m in tf.getmembers():
+            if m.name.startswith("/") or ".." in m.name.split("/") or not (m.isfile() or m.isdir()):
+                die("unexpected entry in git archive: %s" % m.name)
+        if hasattr(tarfile, "data_filter"):
+            tf.extractall(dest, filter="data")
+        else:
+            tf.extractall(dest)
+    run(["git", "add", "-A", "-f", "--", path], wd)
+    sha = run(["git", "rev-parse", "HEAD"], pdir).stdout.strip()
+    src = web_url(remote_url(pdir)) or os.path.basename(pdir)
+    if run(["git", "diff", "--cached", "--quiet"], wd, check=False).returncode:
+        body = run(["git", "log", "-1", "--format=%B"], pdir).stdout.strip()
+        msg = "%s\n\nMirrored into %s/ from %s at %s.\n" % (body, path, src, sha[:7])
+        proc = subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=wd, input=msg, text=True,
+                              capture_output=True)
+        if proc.returncode != 0:
+            die("mirror commit failed:\n" + (proc.stderr or proc.stdout))
+        proc = run(["git", "push", "-q", "origin", "HEAD:refs/heads/" + branch], wd, check=False)
+        if proc.returncode != 0:
+            event(pdir, "git", "Mirror push failed")
+            die("mirror push to %s (branch %s) failed:\n%s" % (repo, branch, proc.stderr.strip()))
+        event(pdir, "git", "Mirrored %s to %s/%s" % (sha[:7], repo, path), action="mirror")
+        print("Mirrored %s into %s: %s/ on branch %s" % (sha[:7], repo, path, branch))
+    else:
+        print("Mirror %s: %s/ already up to date" % (repo, path))
+    # One open pull request from the branch into the base, as long as they differ.
+    ahead = run(["git", "rev-list", "--count", "origin/%s..HEAD" % base], wd).stdout.strip()
+    if ahead == "0":
+        return
+    pr = run(["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "open",
+              "--json", "url", "--jq", ".[0].url"], wd).stdout.strip()
+    if not pr:
+        title = "Add %s/ (mirrored from %s)" % (path, os.path.basename(pdir))
+        body = ("This folder is a mirror of `%s` (%s). The source repository holds the full history; "
+                "this branch is refreshed on every commit there, so please change the code in the source "
+                "repository rather than here.\\n\\nSee `%s/README.md` for what it does and how to run it."
+                "\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\\n"
+                % (os.path.basename(pdir), src, path)).replace("\\n", "\n")
+        pr = run(["gh", "pr", "create", "--repo", repo, "--base", base, "--head", branch,
+                  "--title", title, "--body", body], wd).stdout.strip().splitlines()[-1]
+        event(pdir, "git", "Opened pull request " + pr, action="pr")
+    print("Pull request: " + pr)
+
+
+def git_mirror(args):
+    pdir = project_dir(args.name)
+    if args.off:
+        gj_path = os.path.join(pdir, "state", "git.json")
+        gj = read_json(gj_path, {})
+        old = gj.pop("mirror", None)
+        write_json(gj_path, gj)
+        event(pdir, "git", "Mirror switched off" + (" (%s)" % old["repo"] if old else ""))
+        print("Mirror off: pushes go only to " + (web_url(remote_url(pdir)) or "the project's own remote")
+              + (" (was also %s/%s)" % (old["repo"], old["path"]) if old else ""))
+        return
+    if args.repo and not args.path:
+        die("--repo needs --path (the folder in the mirror repository)")
+    mirror_sync(pdir, _mirror_cfg(pdir, args))
 
 
 def git_info(args):
@@ -750,7 +872,7 @@ def git_info_dict(pdir, fetch=False, limit=40):
 def cmd_git(args):
     fn = {"init": git_init, "init-framework": git_init_framework, "commit": git_commit,
           "commit-framework": git_commit_framework,
-          "push": git_push, "pull": git_pull, "info": git_info,
+          "push": git_push, "pull": git_pull, "info": git_info, "mirror": git_mirror,
           "files": lambda a: print(json.dumps(git_files_dict(project_dir(a.name)), indent=2))}[args.action]
     if args.action not in ("init-framework", "commit-framework") and not args.name:
         die("git %s needs a project name" % args.action)
@@ -1294,6 +1416,239 @@ def cmd_readme(args):
     print("README.md updated" if update_readme(pdir) else "README.md already up to date")
 
 
+# ---------------------------------------------------------------- brief
+#
+# "Pick up where you left off": everything needed to reactivate a project after a pause,
+# gathered from files the framework already keeps. Read-only. The dashboard shows it;
+# agents read it at the start of a task on a project that has been idle.
+
+DORMANT_DAYS = 3
+ACTIVE_PHASES = {"planning", "implementing", "checking", "reviewing", "fixing"}
+
+
+def read_jsonl_tail(path, n):
+    try:
+        with open(path) as f:
+            lines = f.readlines()[-n:]
+    except OSError:
+        return []
+    out = []
+    for l in lines:
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            pass
+    return out
+
+
+def _md_sections(md):
+    """'## Heading' -> body text."""
+    out = {}
+    for block in re.split(r"^## ", md, flags=re.M)[1:]:
+        head, _, body = block.partition("\n")
+        out[head.strip().lower()] = body.strip()
+    return out
+
+
+def _bullets(body, limit=12):
+    """Top-level bullets of a markdown body, continuation lines joined."""
+    items = []
+    for line in body.splitlines():
+        if re.match(r"^[-*] ", line):
+            items.append(line[2:].strip())
+        elif items and re.match(r"^\s+[-*] ", line):
+            items[-1] += (" " if items[-1].endswith(":") else "; ") + line.strip()[2:].strip()
+        elif items and line.startswith("  ") and line.strip():
+            items[-1] += " " + line.strip()
+    return items[:limit]
+
+
+def _first_para(text, limit=700):
+    para = text.strip().split("\n\n")[0] if text.strip() else ""
+    para = " ".join(para.split())
+    return para if len(para) <= limit else para[:limit].rsplit(" ", 1)[0] + " ..."
+
+
+def _strip_comments(text):
+    return re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
+
+
+def brief(pdir):
+    name = os.path.basename(pdir)
+    st = read_json(os.path.join(pdir, "state", "status.json"), {})
+    readme = ""
+    try:
+        readme = open(os.path.join(pdir, "README.md")).read()
+    except OSError:
+        pass
+    rs = _md_sections(readme)
+    intro = _strip_comments(re.split(r"^## ", readme, flags=re.M)[0])
+    intro = "\n".join(l for l in intro.splitlines() if not l.startswith("# ")).strip()
+    what = _strip_comments(rs.get("what it does", ""))
+    run_cmds = re.findall(r"```[a-z]*\n(.*?)```", rs.get("how to run", ""), flags=re.S)
+
+    prog = ""
+    try:
+        prog = open(os.path.join(pdir, "state", "progress.md")).read()
+    except OSError:
+        pass
+    ps = _md_sections(prog)
+    nxt = _bullets(ps.get("next", ""), 20)
+    issues = [b for b in _bullets(ps.get("known issues", "")) if not b.lower().startswith("none")]
+
+    # When was anything last touched?
+    stamps = [_parse_ts(st.get("updated"))]
+    act = read_jsonl_tail(os.path.join(pdir, "state", "activity.jsonl"), 1)
+    if act:
+        stamps.append(_parse_ts(act[-1].get("ts")))
+    stamps = [t for t in stamps if t]
+    last = max(stamps) if stamps else None
+    idle_days = round((dt.datetime.now().astimezone() - last).total_seconds() / 86400, 1) if last else None
+
+    stats = task_stats(pdir)
+    recent = [{"task": t["task"], "outcome": t["outcome"], "start": t["start"], "end": t["end"],
+               "duration_s": t["duration_s"], "attempts": t["attempts"]}
+              for t in reversed(stats["tasks"][-6:])]
+
+    ck = read_json(os.path.join(pdir, "state", "checks.json"), {})
+    checks = {"ran_at": ck.get("ran_at"), "passed": ck.get("passed"),
+              "n_total": len(ck.get("checks", [])),
+              "failing": [c["name"] for c in ck.get("checks", []) if not c.get("passed")]} if ck else None
+
+    feats = _load_features(pdir)["features"]
+    open_feats = [f for f in feats if not f["passes"]]
+    features = {"total": len(feats), "passing": len(feats) - len(open_feats),
+                "next": ({"id": open_feats[0]["id"], "title": open_feats[0]["title"]} if open_feats else None)} \
+        if feats else None
+
+    drafts = []
+    ddir = os.path.join(pdir, "state", "drafts")
+    if os.path.isdir(ddir):
+        for d in sorted(os.listdir(ddir)):
+            m = read_json(os.path.join(ddir, d, "meta.json"), None)
+            if m:
+                drafts.append({"id": m.get("id", d), "issue": m.get("issue"), "summary": m.get("summary")})
+
+    git = git_info_dict(pdir, limit=1)
+    git_out = {"repo": False}
+    if git.get("repo"):
+        c = git["commits"][0] if git["commits"] else {}
+        git_out = {"repo": True, "web": git.get("web"), "uncommitted": git["n_changed"],
+                   "unpushed": git.get("ahead"), "behind": git.get("behind"),
+                   "last_commit": {"date": c.get("date"), "subject": c.get("subject")} if c else None}
+
+    note = st.get("note") or ""
+    question = note.split("Question:", 1)[1].strip() if st.get("phase") == "waiting" and "Question:" in note else None
+
+    # Open loops, most pressing first; each says who acts and how.
+    loops = []
+    if question:
+        loops.append({"who": "you", "text": "The agent asked: " + question, "how": "Answer in Claude Code"})
+    for d in drafts:
+        loops.append({"who": "you", "text": "Unfinished fix %s: %s" % (d["id"], d["summary"] or d["issue"] or ""),
+                      "how": "/draft %s continue %s   or   /draft %s discard %s" % (name, d["id"], name, d["id"])})
+    if st.get("phase") == "stuck":
+        loops.append({"who": "agent", "text": "Last task got stuck: " + note, "how": "/fix %s" % name})
+    if st.get("phase") in ACTIVE_PHASES and idle_days and idle_days > 0.25:
+        loops.append({"who": "agent", "text": "A task was interrupted while %s: %s" % (st["phase"], st.get("task", "")),
+                      "how": "/task %s continue the interrupted task: %s" % (name, st.get("task", ""))})
+    if checks and checks["passed"] is False:
+        loops.append({"who": "agent", "text": "Checks failing: " + ", ".join(checks["failing"]),
+                      "how": "/fix %s make the failing checks pass" % name})
+    if git_out.get("uncommitted"):
+        loops.append({"who": "you", "text": "%d uncommitted change(s)" % git_out["uncommitted"],
+                      "how": "python3 framework/aaf.py git commit %s" % name})
+    if git_out.get("unpushed"):
+        loops.append({"who": "you", "text": "%d commit(s) not on GitHub" % git_out["unpushed"],
+                      "how": "python3 framework/aaf.py git push %s" % name})
+    for b in nxt:
+        if re.match(r"^(human|you)\s*:", b, flags=re.I):
+            loops.append({"who": "you", "text": re.sub(r"^\w+\s*:\s*", "", b), "how": None})
+
+    if loops and loops[0]["how"]:
+        suggestion = loops[0]["how"]
+    elif features and features["next"]:
+        suggestion = "/task %s next" % name
+    else:
+        suggestion = None      # no obvious command; the "next" list is the starting point
+
+    return {
+        "project": name,
+        "summary": _first_para(intro),
+        "what_it_does": _first_para(what),
+        "how_to_run": run_cmds[0].strip() if run_cmds else None,
+        "last_activity": last.isoformat(timespec="seconds") if last else None,
+        "idle_days": idle_days,
+        "dormant": bool(idle_days is not None and idle_days >= DORMANT_DAYS and st.get("phase") not in ACTIVE_PHASES),
+        "status": {"phase": st.get("phase"), "task": st.get("task"), "note": note, "updated": st.get("updated")},
+        "recent_tasks": recent,
+        "tasks_total": stats["summary"]["tasks"],
+        "next": nxt,
+        "known_issues": issues,
+        "decisions": [d["title"] for d in _decisions(pdir)][-4:][::-1],
+        "checks": checks,
+        "features": features,
+        "drafts": drafts,
+        "git": git_out,
+        "open_loops": loops,
+        "suggestion": suggestion,
+    }
+
+
+def _ago(days):
+    if days is None:
+        return "never"
+    if days < 1:
+        return "today"
+    return "%d day%s ago" % (round(days), "" if round(days) == 1 else "s")
+
+
+def cmd_brief(args):
+    b = brief(project_dir(args.name))
+    if args.json:
+        print(json.dumps(b, indent=2))
+        return
+    out = ["# %s: pick up where you left off" % b["project"], ""]
+    if b["summary"]:
+        out += [b["summary"], ""]
+    if b["what_it_does"]:
+        out += [b["what_it_does"], ""]
+    s = b["status"]
+    out.append("Last activity %s. Last task (%s): %s" % (_ago(b["idle_days"]), s["phase"] or "?", s["task"] or "none"))
+    if s["note"]:
+        out.append("  " + s["note"])
+    if b["checks"]:
+        c = b["checks"]
+        out.append("Checks: %s (%d), last run %s" % ("all pass" if c["passed"] else "FAILING: " + ", ".join(c["failing"]),
+                                                    c["n_total"], c["ran_at"]))
+    if b["features"]:
+        f = b["features"]
+        out.append("Features: %d of %d pass%s" % (f["passing"], f["total"],
+                                                  "; next %s %s" % (f["next"]["id"], f["next"]["title"]) if f["next"] else ""))
+    out.append("")
+    if b["recent_tasks"]:
+        out.append("## Recent tasks")
+        for t in b["recent_tasks"]:
+            out.append("- [%s] %s  (%s)" % (t["outcome"], t["task"], (t["end"] or t["start"] or "")[:10]))
+        out.append("")
+    if b["open_loops"]:
+        out.append("## Open loops")
+        for l in b["open_loops"]:
+            out.append("- (%s) %s" % (l["who"], l["text"]) + ("\n    -> %s" % l["how"] if l["how"] else ""))
+        out.append("")
+    if b["next"]:
+        out.append("## Next (from state/progress.md)")
+        out += ["- " + n for n in b["next"]]
+        out.append("")
+    if b["decisions"]:
+        out.append("## Recent decisions")
+        out += ["- " + d for d in b["decisions"]]
+        out.append("")
+    if b["suggestion"]:
+        out.append("Suggested next command:  " + b["suggestion"])
+    print("\n".join(out))
+
+
 # ---------------------------------------------------------------- list
 
 def cmd_list(_args):
@@ -1334,10 +1689,12 @@ def main():
     s.add_argument("--issue"); s.add_argument("--summary"); s.add_argument("--iterations", type=int)
     s.add_argument("--notes"); s.set_defaults(fn=cmd_draft)
 
-    s = sub.add_parser("git"); s.add_argument("action", choices=["init", "init-framework", "commit", "commit-framework", "push", "pull", "info", "files"])
+    s = sub.add_parser("git"); s.add_argument("action", choices=["init", "init-framework", "commit", "commit-framework", "push", "pull", "info", "files", "mirror"])
     s.add_argument("name", nargs="?"); s.add_argument("--repo"); s.add_argument("--public", action="store_true")
     s.add_argument("--no-remote", action="store_true"); s.add_argument("--title")
     s.add_argument("--allow-failing", action="store_true"); s.add_argument("--fetch", action="store_true")
+    s.add_argument("--path"); s.add_argument("--branch"); s.add_argument("--base")
+    s.add_argument("--off", action="store_true", help="git mirror: stop mirroring this project")
     s.set_defaults(fn=cmd_git)
 
     s = sub.add_parser("stats"); s.add_argument("name"); s.set_defaults(fn=cmd_stats)
@@ -1350,6 +1707,9 @@ def main():
     s.add_argument("name"); s.add_argument("id", nargs="?"); s.add_argument("--title")
     s.add_argument("--criteria"); s.add_argument("--spec"); s.add_argument("--evidence")
     s.set_defaults(fn=cmd_feature)
+
+    s = sub.add_parser("brief"); s.add_argument("name"); s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_brief)
 
     s = sub.add_parser("list"); s.set_defaults(fn=cmd_list)
 

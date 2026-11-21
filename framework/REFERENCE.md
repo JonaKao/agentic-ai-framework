@@ -35,7 +35,9 @@ draft save|apply|discard|list <p> [ID] ...  unfinished fix attempts
 feature add <p> --title T [--criteria T] [--spec PATH] / list / next / pass ID --evidence T / fail ID
 git init <p> | init-framework | commit <p> [--title T] | commit-framework [--title T]
 git push|pull|info|files <p>
+git mirror <p> [--repo OWNER/NAME --path DIR [--branch B] [--base main]]   copy HEAD into a folder of another repo on a branch + PR; re-run after every push; `--off` stops mirroring
 stats <p> / estimate <p> / readme <p> / new <p> [--from PATH] / list
+brief <p> [--json]                          where the project stands: summary, recent tasks, open loops, next steps
 ```
 
 ## Review severities

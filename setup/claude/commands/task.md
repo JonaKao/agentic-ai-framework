@@ -22,6 +22,9 @@ Use `P` for the project name below. Report every phase change with
 
 - Read `projects/P/CLAUDE.md`, `projects/P/DONE.md`, `projects/P/project.json`,
   `projects/P/state/progress.md` and `projects/P/state/decisions.md`.
+- Run `python3 framework/aaf.py brief P` for where the project stands: recent tasks,
+  open loops (unfinished drafts, failing checks, unanswered questions, unsaved Git work)
+  and what the last session left as next steps. Resolve open loops that block this task first.
 - Run `python3 framework/aaf.py status P --phase planning --task "<the task, one line>" --iteration 0`.
 - If `projects/P/.git` exists, run `python3 framework/aaf.py git pull P` to start from
   the latest version on GitHub. If it reports diverged histories, stop and ask the human.
