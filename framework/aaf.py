@@ -1434,7 +1434,12 @@ def update_readme(pdir):
         i, j = new.find(start), new.find(end)
         if i == -1 or j == -1 or j < i:
             continue
-        new = new[:i + len(start)] + "\n" + fn(pdir) + "\n" + new[j:]
+        body = fn(pdir)
+        if name == "history" and body.startswith("_No finished tasks") and new[i + len(start):j].strip():
+            # state/events.jsonl is not in Git: on a fresh clone (another machine) there are no
+            # task records yet, and the history already in the README must not be wiped.
+            continue
+        new = new[:i + len(start)] + "\n" + body + "\n" + new[j:]
     if new != text:
         with open(path, "w", encoding="utf-8") as f:
             f.write(new)
