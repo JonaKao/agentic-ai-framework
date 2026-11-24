@@ -1,6 +1,6 @@
 ---
-description: Run a task in a project until its definition of done holds
-argument-hint: <project> <what to do>
+description: Run a task in a project until its definition of done holds (or `all`: every unfinished feature, one after another)
+argument-hint: <project> <what to do> | next | all
 ---
 
 Input: $ARGUMENTS
@@ -14,6 +14,26 @@ task, and its spec file (if any) is required reading. If the task names a spec f
 it first and work from it. When a feature's criteria are met and checked end to end, mark
 it with `python3 framework/aaf.py feature pass <project> <ID> --evidence "<the check that proves it>"`
 before finishing. Never edit or remove features; if one is wrong, say so in your report.
+
+If the task is `all`, work through every unfinished feature, one after another, without
+waiting to be prompted again:
+- Start the run: `python3 framework/aaf.py run start <project>`.
+- Do each feature exactly as for `next`, sections 1 to 5 in full (orient, a plan, the loop,
+  the independent review, minor fixes, progress, README, commit). Each feature is its own
+  task on the record, with its own `--task` line naming the feature (e.g. "F3: Its own window").
+- After a feature's commit, take the next one at once. The Stop hook also sends you on
+  while features remain. Keep the report between features to one line.
+- Drafts from a feature's minor fixes do not stop the run: end that feature `done` with the
+  drafts named in its `--note`, and ask about all drafts in the final report.
+- The run stops only for the human: to ask a question (phase `waiting`, as in Guardrails;
+  continue the run after the answer), or when a feature is stuck (phase `stuck`, then
+  `python3 framework/aaf.py run end <project> --reason "stuck on <ID>"` and report). Never
+  skip a stuck feature to start the next.
+- When every feature passes: `python3 framework/aaf.py run end <project>`, set the final
+  phase (`waiting` if drafts need a decision, else `done`), and give one report for the whole
+  run: each feature with its evidence, the review verdicts, and every draft with its question.
+- Your context may be compacted during a long run. Everything you need is on the record:
+  `aaf.py run show`, `aaf.py feature list`, `aaf.py brief`, the spec and `state/progress.md`.
 
 Use `P` for the project name below. Report every phase change with
 `python3 framework/aaf.py status P --phase <phase> ...` so the dashboard stays live.

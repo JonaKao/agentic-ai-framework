@@ -29,6 +29,7 @@ project's files before working on it. Command and file details: `framework/REFER
 ## Commands
 
 - `/spec <name> <idea>`: interview the human and write a spec with features (large work)
-- `/task <name> <what to do>` or `/task <name> next`: run until the definition of done holds
+- `/task <name> <what to do>` or `/task <name> next`: run until the definition of done holds;
+  `/task <name> all`: every unfinished feature in turn, without re-prompting
 - `/fix <name> [issues]` and `/draft <name> continue|discard <id>`: follow-up fixes
 - `/new-project <name>` and `/onboard <name> <path>`: start or take over a project

@@ -496,6 +496,7 @@ state/plan.json
 state/mirror/
 state/estimates.jsonl
 state/usage.jsonl
+state/run.json
 *.tmp
 .venv/
 venv/
@@ -1380,6 +1381,58 @@ def cmd_feature(args):
     print(text)
 
 
+# ---------------------------------------------------------------- run
+#
+# A feature run: one `/task <p> all` works through every unfinished feature without the
+# human re-prompting. state/run.json marks it; the Stop hook (hooks/gate.py) sees it and,
+# when a feature ends `done` while others remain, sends the agent on to the next one.
+# The run ends when every feature passes, or on `run end` (stuck, or the human stops it).
+
+def _run_path(pdir):
+    return os.path.join(pdir, "state", "run.json")
+
+
+def cmd_run(args):
+    pdir = project_dir(args.name)
+    path = _run_path(pdir)
+    feats = _load_features(pdir)["features"]
+    left = [f for f in feats if not f["passes"]]
+    cur = read_json(path, None)
+
+    if args.action == "start":
+        if not feats:
+            die("no features in %s; write a spec with features first (/spec)" % args.name)
+        if not left:
+            die("every feature of %s already passes; nothing to run" % args.name)
+        write_json(path, {"mode": "features", "started": now(),
+                          "features_left_at_start": [f["id"] for f in left]})
+        event(pdir, "run", "Feature run started: %d of %d features to go" % (len(left), len(feats)),
+              action="start")
+        print("Feature run started for %s: %d of %d features to go, next %s %s"
+              % (args.name, len(left), len(feats), left[0]["id"], left[0]["title"]))
+        return
+
+    if args.action == "end":
+        if not cur:
+            print("No feature run is going on in %s." % args.name)
+            return
+        os.remove(path)
+        reason = args.reason or ("all features pass" if not left else "ended")
+        event(pdir, "run", "Feature run ended: %s (%d of %d features pass)"
+              % (reason, len(feats) - len(left), len(feats)), action="end")
+        print("Feature run ended for %s: %s. %d of %d features pass."
+              % (args.name, reason, len(feats) - len(left), len(feats)))
+        return
+
+    # show
+    if not cur:
+        print("No feature run is going on in %s." % args.name)
+        return
+    print("Feature run since %s: %d of %d features pass%s"
+          % (cur.get("started", "?"), len(feats) - len(left), len(feats),
+             "; next %s %s" % (left[0]["id"], left[0]["title"]) if left else "; all done, end it with `run end`"))
+
+
 # ---------------------------------------------------------------- readme
 #
 # A project's README.md is written by the agent, but two sections are generated here
@@ -1745,6 +1798,8 @@ def main():
     s.add_argument("name"); s.add_argument("id", nargs="?"); s.add_argument("--title")
     s.add_argument("--criteria"); s.add_argument("--spec"); s.add_argument("--evidence")
     s.set_defaults(fn=cmd_feature)
+    s = sub.add_parser("run"); s.add_argument("action", choices=["start", "end", "show"])
+    s.add_argument("name"); s.add_argument("--reason"); s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("brief"); s.add_argument("name"); s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_brief)

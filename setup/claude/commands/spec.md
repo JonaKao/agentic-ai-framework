@@ -28,5 +28,5 @@ session. Small, clear changes go straight to `/task`.
 6. `python3 framework/aaf.py decide P "Spec: <short-name>" "<the main choices made in the interview>"`
 7. `python3 framework/aaf.py status P --phase idle --note "Spec ready: specs/<short-name>.md"`.
 8. Tell the human the spec is ready and how to run it: first `/clear` (a fresh session
-   implements best from the written spec alone), then `/task P next` once per feature,
+   implements best from the written spec alone), then `/task P all` to build every feature in one go (it stops only to ask or when stuck), or `/task P next` once per feature,
    or `/task P implement specs/<short-name>.md` for a small spec.

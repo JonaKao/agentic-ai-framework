@@ -68,7 +68,7 @@ def projects():
 
 def project_from_text(text):
     names = projects()
-    m = re.search(r"aaf\.py\s+(?:git|draft)\s+\S+\s+([A-Za-z0-9][A-Za-z0-9_.-]*)", text or "")
+    m = re.search(r"aaf\.py\s+(?:git|draft|feature|run)\s+\S+\s+([A-Za-z0-9][A-Za-z0-9_.-]*)", text or "")
     if not m:
         m = re.search(r"aaf\.py\s+(?:check|status|decide|review|snapshot|restore|new)\s+([A-Za-z0-9][A-Za-z0-9_.-]*)", text or "")
     if m and m.group(1) in names:
@@ -94,6 +94,18 @@ def sticky(session, project=None):
             return json.load(f).get("project")
     except (OSError, ValueError):
         return project
+
+
+def claim_run(session, text):
+    """`aaf.py run start <p>` in this session makes it the session that owns the feature run,
+    so the Stop hook carries on from feature to feature here and in no other session."""
+    m = re.search(r"aaf\.py\s+run\s+start\s+([A-Za-z0-9][A-Za-z0-9_.-]*)", text or "")
+    if not session or not m or m.group(1) not in projects():
+        return
+    os.makedirs(SESSIONS, exist_ok=True)
+    path = os.path.join(SESSIONS, re.sub(r"[^A-Za-z0-9_-]", "", session) + "-run.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"project": m.group(1), "claimed": now()}, f)
 
 
 def most_active():
@@ -208,6 +220,7 @@ def main():
     session = data.get("session_id", "")
     blob = json.dumps(data.get("tool_input") or {})
     project = project_from_text(blob)
+    claim_run(session, blob)
     project = sticky(session, project) if project else (sticky(session) or most_active())
     if not project:
         return

@@ -30,7 +30,9 @@ live dashboard.
    - `/spec my-model <idea>` first for anything large, or
    - `/new-project my-model` for a new project, or
    - `/onboard practical ~/path/to/existing/code` to take over existing code
-   - then `/task my-model add a validation split and report validation loss`
+   - then `/task my-model add a validation split and report validation loss`, or, after
+     a `/spec`, `/task my-model all` to build every feature in one go (it stops only to
+     ask you something or when a feature is stuck)
 
 ## Extras the agents use
 
@@ -41,7 +43,8 @@ live dashboard.
   limited to GitHub, PyPI, Hugging Face, PyTorch and the Playwright downloads. The
   framework tool and its checks run outside it.
 - **Hooks**: `framework/hooks/activity.py` feeds the dashboard and records token usage;
-  `framework/hooks/gate.py` keeps a `/task` running until it ends on the record.
+  `framework/hooks/gate.py` keeps a `/task` running until it ends on the record, and
+  in a feature run (`/task <project> all`) carries it on from one finished feature to the next.
 
 ## Git and GitHub
 
