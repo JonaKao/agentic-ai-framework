@@ -1,8 +1,8 @@
 # Agentic AI Framework
 
 A workspace for handing whole tasks to a coding agent: you give one command, the agent
-works in a loop until the project's definition of done holds, and you watch it on a
-live dashboard.
+works in a loop until the project's definition of done holds, and you watch it in the
+Agent Control Room, a desktop app that also tells you when a project needs you.
 
 ## The loop
 
@@ -19,13 +19,12 @@ live dashboard.
 
 ## Start
 
-1. Run `bash setup/install.sh` once (or just double-click `Open Dashboard.command`,
-   which does it for you). It installs the agent commands into `.claude/`. Without bash
+1. Run `bash setup/install.sh` once. It installs the agent commands into `.claude/`. Without bash
    (Windows): `python3 setup/install.py`, which also writes `.mcp.json`.
 2. Install Claude Code (see https://docs.claude.com/en/docs/claude-code), then open a
    terminal in this folder and run `claude`.
-3. Start the dashboard: double-click `Open Dashboard.command`, or run
-   `python3 dashboard/server.py` and open http://localhost:8765.
+3. Install the Agent Control Room app and open it (how: "How to run" in
+   `projects/control-room/README.md`). On its first start, choose this folder as your workspace.
 4. In Claude Code:
    - `/spec my-model <idea>` first for anything large, or
    - `/new-project my-model` for a new project, or
@@ -70,7 +69,7 @@ then `gh auth login`).
 | `.claude/commands/` | `/task`, `/fix`, `/draft`, `/new-project`, `/onboard` (installed from `setup/claude/`; edit them there) |
 | `.claude/agents/reviewer.md` | The independent reviewer subagent (installed from `setup/claude/`) |
 | `framework/aaf.py` | CLI the agent uses to record status, checks, decisions, reviews |
-| `projects/control-room/` | The dashboard, kept as a project so agents can improve it (`dashboard/server.py` starts it) |
+| `projects/control-room/` | The Agent Control Room desktop app, kept as a project so agents can improve it (install and use: its README) |
 | `framework/hooks/activity.py` | Logs each agent step in plain words for the dashboard's live activity feed |
 | `template/` | Files every new project starts with |
 | `projects/<name>/` | Your projects: `CLAUDE.md`, `DONE.md`, `project.json`, `state/`, `plots/` |

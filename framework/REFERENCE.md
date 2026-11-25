@@ -16,7 +16,7 @@ Details behind the rules in the workspace `CLAUDE.md`. Read the part you need.
 | `projects/<name>/plots/` | Plots; shown on the dashboard |
 | `framework/aaf.py` | The CLI below |
 | `framework/hooks/` | `activity.py` (live feed, token usage) and `gate.py` (keeps `/task` running) |
-| `projects/control-room/` | The dashboard; `python3 dashboard/server.py`, then http://localhost:8765 |
+| `projects/control-room/` | The Agent Control Room desktop app (the dashboard); install it from its README, or `python3 build.py` there |
 | `template/` | Files copied into every new project |
 | `setup/claude/` | Source of `.claude/` (commands, agents, settings); edit here, not in `.claude/` |
 
